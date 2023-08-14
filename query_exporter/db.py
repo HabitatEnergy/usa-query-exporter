@@ -4,6 +4,7 @@ import asyncio
 from itertools import chain
 import logging
 import sys
+import re
 from time import perf_counter
 from traceback import format_tb
 from typing import (
@@ -28,6 +29,8 @@ from sqlalchemy_aio.base import (
     AsyncConnection,
     AsyncResultProxy,
 )
+import snowflake.connector
+from snowflake.connector.connection import SnowflakeConnection
 
 #: Timeout for a query
 QueryTimeout = int | float
@@ -124,6 +127,16 @@ def create_db_engine(dsn: str, **kwargs) -> AsyncioEngine:
         raise DataBaseError(f'Invalid database DSN: "{dsn}"')
 
 
+def create_snowflake_connection(dsn: str) -> SnowflakeConnection:
+    connection_config = re.search('(snowflake:\/\/)(.+)(:)(.+)(@)(.+)', dsn)
+
+    return snowflake.connector.connect(
+        user=connection_config.group(2),
+        password=connection_config.group(4),
+        account=connection_config.group(6),
+    )
+
+
 class QueryMetric(NamedTuple):
     """Metric details for a Query."""
 
@@ -145,6 +158,13 @@ class QueryResults(NamedTuple):
         latency = conn_info.get("query_latency", None)
         return cls(
             await results.keys(), await results.fetchall(), latency=latency
+        )
+
+    @classmethod
+    def from_snowflake(cls, keys, results):
+        return cls(
+            [key.name.lower() for key in keys],
+            [result for result in results]
         )
 
 
@@ -238,6 +258,54 @@ class Query:
         query_params = set(expr.compile().params)
         if set(self.parameters) != query_params:
             raise InvalidQueryParameters(self.name)
+
+
+class SnowflakeDataBase:
+    _pending_queries: int = 0
+
+    def __init__(
+        self,
+        config,
+        logger: logging.Logger = logging.getLogger(),
+    ):
+        self.config = config
+        self.logger = logger
+        self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+
+    async def __aenter__(self):
+        if not self._engine:
+            self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+
+    async def close(self):
+        await self._engine.close()
+
+    async def execute(self, query: Query) -> MetricResults:
+        """Execute a query."""
+        self.logger.debug(
+            f'running query "{query.name}" on database "{self.config.name}"'
+        )
+        self._pending_queries += 1
+        try:
+            cur = self._engine.cursor()
+            cur.execute_async(query.sql)
+            cur.get_results_from_sfqid(cur.sfqid)
+            results = cur.fetchall()
+            return query.results(QueryResults.from_snowflake(cur.description, results))
+        except Exception as error:
+            message = str(error).strip()
+            self.logger.error(
+                f'error from database "{self.config.name}": {message}'
+            )
+            raise DataBaseQueryError(message)
+        finally:
+            assert self._pending_queries >= 0, "pending queries is negative"
+            self._pending_queries -= 1
+            if not self.config.keep_connected and not self._pending_queries:
+                self.close()
 
 
 class DataBase:

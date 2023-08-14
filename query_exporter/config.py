@@ -27,8 +27,9 @@ import jsonschema
 from prometheus_aioexporter import MetricConfig
 import yaml
 
-from .db import (
+from query_exporter.db import (
     create_db_engine,
+    create_snowflake_connection,
     DATABASE_LABEL,
     DataBaseError,
     InvalidQueryParameters,
@@ -79,6 +80,7 @@ class DataBaseConfig:
 
     name: str
     dsn: str
+    conn_type: str = 'generic'
     connect_sql: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     keep_connected: bool = True
@@ -86,7 +88,10 @@ class DataBaseConfig:
 
     def __post_init__(self):
         try:
-            create_db_engine(self.dsn)
+            if self.conn_type == 'snowflake':
+                create_snowflake_connection(self.dsn)
+            else:
+                create_db_engine(self.dsn)
         except DataBaseError as e:
             raise ConfigError(str(e))
 
@@ -137,6 +142,7 @@ def _get_databases(
             databases[name] = DataBaseConfig(
                 name,
                 _resolve_dsn(config["dsn"], env),
+                conn_type=config.get("conn_type", "generic"),
                 connect_sql=config.get("connect-sql", []),
                 labels=labels,
                 keep_connected=config.get("keep-connected", True),
