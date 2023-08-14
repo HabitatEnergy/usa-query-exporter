@@ -118,6 +118,10 @@ definitions:
           query is run in a separate transaction.  This option is deprecated
           and will be removed in the next major release.
         type: boolean
+        default: true
+      conn_type:
+        title: What type of connection this is
+        type: string
       keep-connected:
         title: Whether to keep the connection open for the database between queries
         description: >

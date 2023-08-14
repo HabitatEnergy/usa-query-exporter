@@ -23,9 +23,7 @@ RUN pip install \
     clickhouse-sqlalchemy \
     "ibm-db-sa; platform_machine == 'x86_64' or platform_machine == 'ppc64le'" \
     mysqlclient \
-    psycopg2 \
-    pymssql \
-    pyodbc
+    psycopg2
 
 RUN curl \
     https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linux$(arch | sed -e 's/x86_64/x64/g; s/aarch64/-arm64/g').zip \

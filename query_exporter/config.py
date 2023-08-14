@@ -126,6 +126,7 @@ def _get_databases(
             databases[name] = DataBaseConfig(
                 name,
                 _resolve_dsn(config["dsn"], env),
+                conn_type=config.get("conn_type", "generic"),
                 connect_sql=config.get("connect-sql", []),
                 labels=labels,
                 keep_connected=config.get("keep-connected", True),

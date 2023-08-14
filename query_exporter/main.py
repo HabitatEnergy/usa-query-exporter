@@ -14,8 +14,8 @@ from prometheus_aioexporter import (
 )
 from prometheus_client.metrics import Gauge
 
-from . import __version__
-from .config import (
+from query_exporter import __version__
+from query_exporter.config import (
     Config,
     ConfigError,
     load_config,
