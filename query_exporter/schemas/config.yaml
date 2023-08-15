@@ -117,6 +117,9 @@ definitions:
           When set to false, don't autocommit after each query.
         type: boolean
         default: true
+      conn_type:
+        title: What type of connection this is
+        type: string
       keep-connected:
         title: Whether to keep the connection open for the database between queries
         description: >

@@ -10,6 +10,7 @@ import time
 from typing import (
     Any,
     cast,
+    Union,
 )
 
 from croniter import croniter
@@ -21,14 +22,15 @@ from toolrack.aio import (
     TimedCall,
 )
 
-from .config import (
+from query_exporter.config import (
     Config,
     DB_ERRORS_METRIC_NAME,
     QUERIES_METRIC_NAME,
     QUERY_LATENCY_METRIC_NAME,
 )
-from .db import (
+from query_exporter.db import (
     DataBase,
+    SnowflakeDataBase,
     DATABASE_LABEL,
     DataBaseConnectError,
     DataBaseError,
@@ -123,8 +125,14 @@ class QueryLoop:
                 for name, metric in self._config.metrics.items()
             }
         )
-        self._databases: dict[str, DataBase] = {
-            db_config.name: DataBase(db_config, logger=self._logger)
+
+        database_classes = {
+            'snowflake': SnowflakeDataBase,
+            'generic': DataBase
+        }
+
+        self._databases: dict[str, Union[DataBase, SnowflakeDataBase]] = {
+            db_config.name: database_classes[db_config.conn_type] (db_config, logger=self._logger)
             for db_config in self._config.databases.values()
         }
 
