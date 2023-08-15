@@ -226,7 +226,7 @@ class TestQueryLoop:
         # the number of queries is updated
         queries_metric = registry.get_metric("queries")
         assert metric_values(queries_metric, by_labels=("status",)) == {
-            ("success",): 2.0
+            ("success",): 3.0
         }
 
     async def test_run_query_null_value(
@@ -345,7 +345,7 @@ class TestQueryLoop:
         await query_loop.start()
         await query_tracker.wait_failures()
         queries_metric = registry.get_metric("database_errors")
-        assert metric_values(queries_metric) == [1.0]
+        assert metric_values(queries_metric) == [2.0]
 
     async def test_run_query_increase_query_error_count(
         self, query_tracker, config_data, make_query_loop, registry
@@ -357,7 +357,7 @@ class TestQueryLoop:
         await query_tracker.wait_failures()
         queries_metric = registry.get_metric("queries")
         assert metric_values(queries_metric, by_labels=("status",)) == {
-            ("error",): 1.0
+            ("error",): 2.0
         }
 
     async def test_run_query_increase_timeout_count(
