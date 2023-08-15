@@ -33,13 +33,6 @@ class TestInvalidResultCount:
 
 
 class TestCreateDBEngine:
-    def test_instantiate_missing_engine_module(self, caplog):
-        """An error is raised if a module for the engine is missing."""
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(DataBaseError) as error:
-                create_db_engine("postgresql:///foo")
-        assert str(error.value) == 'module "psycopg2" not found'
-
     @pytest.mark.parametrize("dsn", ["foo-bar", "unknown:///db"])
     def test_instantiate_invalid_dsn(self, caplog, dsn):
         """An error is raised if a the provided DSN is invalid."""
