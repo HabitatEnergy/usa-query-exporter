@@ -9,7 +9,7 @@ services:
     command:
       - |
         . /virtualenv/bin/activate
-        /virtualenv/bin/python3 -m pytest -v tests
+        /virtualenv/bin/python3 -m pytest -v /app/tests
     networks:
       - default
 
