@@ -12,6 +12,8 @@ RUN apt-get install -y --no-install-recommends \
     unzip
 
 COPY . /srcdir
+WORKDIR /srcdir
+
 RUN python3 -m venv /virtualenv
 ENV PATH="/virtualenv/bin:$PATH"
 RUN pip install \
