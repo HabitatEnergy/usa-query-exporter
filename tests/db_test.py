@@ -430,6 +430,7 @@ class TestDataBase:
             "connected", database="db", worker_id=ANY, level="debug"
         )
 
+<<<<<<< HEAD
     async def test_connect_lock(self, db: DataBase) -> None:
         await asyncio.gather(db.connect(), db.connect())
 
@@ -441,6 +442,24 @@ class TestDataBase:
         assert "unable to open database file" in str(error.value)
 
     async def test_connect_sql(self, mocker: MockerFixture) -> None:
+||||||| parent of cb46dc9 (Fix tests)
+    @pytest.mark.asyncio
+    async def test_connect_error(self):
+        """A DataBaseConnectError is raised if database connection fails."""
+        config = DataBaseConfig(name="db", dsn="sqlite:////invalid")
+        db = DataBase(config)
+        with pytest.raises(DataBaseConnectError) as error:
+            await db.connect()
+        assert "unable to open database file" in str(error.value)
+
+    @pytest.mark.asyncio
+    async def test_connect_sql(self):
+        """If connect_sql is specified, it's run at connection."""
+=======
+    @pytest.mark.asyncio
+    async def test_connect_sql(self):
+        """If connect_sql is specified, it's run at connection."""
+>>>>>>> cb46dc9 (Fix tests)
         config = DataBaseConfig(
             name="db",
             dsn="sqlite://",
