@@ -354,6 +354,7 @@ class TestQueryLoop:
             labels={"database": "db", "l": "foo"},
         )
 
+<<<<<<< HEAD
     async def test_run_query_increase_db_error_count(
         self,
         query_tracker: QueryTracker,
@@ -368,6 +369,20 @@ class TestQueryLoop:
         queries_metric = registry.get_metric("database_errors")
         assert metric_values(queries_metric) == [1.0]
 
+||||||| parent of 6055dd5 (fix testing)
+    async def test_run_query_increase_db_error_count(
+        self, query_tracker, config_data, make_query_loop, registry
+    ):
+        """Query errors are logged."""
+        config_data["databases"]["db"]["dsn"] = "sqlite:////invalid"
+        query_loop = make_query_loop()
+        await query_loop.start()
+        await query_tracker.wait_failures()
+        queries_metric = registry.get_metric("database_errors")
+        assert metric_values(queries_metric) == [1.0]
+
+=======
+>>>>>>> 6055dd5 (fix testing)
     async def test_run_query_increase_database_error_count(
         self,
         mocker: MockerFixture,
