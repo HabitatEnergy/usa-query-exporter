@@ -1,0 +1,17 @@
+version: "3.4"
+
+services:
+  # If you change this name from "tests" the build scripts need modifying too
+  tests:
+    build:
+      context: .
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        . /virtualenv/bin/activate
+        /virtualenv/bin/python3 -m pytest -v tests
+    networks:
+      - default
+
+networks:
+  default:

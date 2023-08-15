@@ -1,0 +1,39 @@
+version: 0.2
+
+env:
+  parameter-store:
+    build_ssh_key: "habitat_energy_machine_account"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.10
+  pre_build:
+    commands:
+      - # make environmental variables
+      - if [ -z "$ENV" ]; then export ENV="development"; fi
+      - if [ -z "$EVENT" ]; then export EVENT="$CODEBUILD_WEBHOOK_EVENT"; fi
+      -
+      - # setup ssh
+      - echo "$build_ssh_key" | tr -d '\r' > infrastructure/ssh/id_rsa
+      - bash infrastructure/bash/setup_ssh.sh
+      -
+      - # run all tests with docker file
+      - bash infrastructure/bash/docker_login.sh
+      - bash infrastructure/bash/run_docker_tests.sh
+  build:
+    commands:
+      # build images
+      - docker-compose -f local-stack.yaml -p build build --no-cache
+      # push to ecr
+      - export ECR_REPOSITORY=$(cat infrastructure/project_config.json | jq -r .ecr.repository)
+      - bash infrastructure/bash/push_docker_image_ecr.sh $(cat infrastructure/project_config.json | jq -r .aws.account).dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPOSITORY}
+  post_build:
+    commands:
+      - printf '[{"name":"dev-usa-query-exporter", "imageUri":"417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter:main"}]' > imagedefinitions.json
+artifacts:
+  files: imagedefinitions.json
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
+    - 'build/**/*'

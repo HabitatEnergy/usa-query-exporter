@@ -1,0 +1,27 @@
+version: 0.2
+
+env:
+  parameter-store:
+    build_ssh_key: "habitat_energy_machine_account"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.10
+  build:
+    commands:
+      - # make environmental variables
+      - if [ -z "$ENV" ]; then export ENV="development"; fi
+      - if [ -z "$EVENT" ]; then export EVENT="$CODEBUILD_WEBHOOK_EVENT"; fi
+      -
+      - # setup ssh
+      - echo "$build_ssh_key" | tr -d '\r' > infrastructure/ssh/id_rsa
+      - bash infrastructure/bash/setup_ssh.sh
+      -
+      - # run all tests with docker file
+      - . infrastructure/bash/docker_login.sh
+      - . infrastructure/bash/run_docker_tests.sh
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
+    - 'build/**/*'
