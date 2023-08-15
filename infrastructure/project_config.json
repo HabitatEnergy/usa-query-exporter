@@ -1,0 +1,8 @@
+{
+    "ecr": {
+        "repository": "usa-query-exporter"
+    },
+    "aws": {
+        "account": "417844920390"
+    }
+}

@@ -1,0 +1,13 @@
+version: "3.4"
+
+services:
+  # If you change this name from "app" the build scripts need modifying too
+  app:
+    build:
+      context: .
+    networks:
+      - default
+
+networks:
+  default:
+    name: local
