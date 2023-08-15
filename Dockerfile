@@ -14,7 +14,6 @@ RUN apt-get install -y --no-install-recommends \
     unzip
 
 COPY . /srcdir
-WORKDIR /srcdir
 
 RUN python3 -m venv /virtualenv
 ENV PATH="/virtualenv/bin:$PATH"
@@ -58,6 +57,7 @@ RUN apt-get update && \
 
 COPY --from=build-image /virtualenv /virtualenv
 COPY --from=build-image /opt /opt
+COPY --from=build-image /srcdir /app
 
 ENV PATH="/virtualenv/bin:$PATH"
 ENV VIRTUAL_ENV="/virtualenv"

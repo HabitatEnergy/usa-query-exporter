@@ -38,6 +38,9 @@ dependencies = [
   "structlog",
   "toolrack>=4",
   "snowflake-connector-python",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-mock",
 ]
 optional-dependencies.testing = [
   "pytest",

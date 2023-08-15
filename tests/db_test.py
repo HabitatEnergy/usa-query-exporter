@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncIterator, Iterator
+import logging
 from threading import Thread
 import time
 import typing as t
@@ -46,9 +47,11 @@ class TestInvalidResultCount:
 
 
 class TestCreateDBEngine:
-    def test_instantiate_missing_engine_module(self) -> None:
-        with pytest.raises(DataBaseError) as error:
-            create_db_engine("postgresql:///foo")
+    def test_instantiate_missing_engine_module(self, caplog):
+        """An error is raised if a module for the engine is missing."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(DataBaseError) as error:
+                create_db_engine("postgresql:///foo")
         assert str(error.value) == 'module "psycopg2" not found'
 
     @pytest.mark.parametrize("dsn", ["foo-bar", "unknown:///db"])
