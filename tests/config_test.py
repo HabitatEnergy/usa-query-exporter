@@ -882,7 +882,7 @@ class TestLoadConfig:
             load_config(fd, logger)
         assert (
             str(err.value)
-            == "Invalid config at queries/q/metrics: [] is too short"
+            == "Invalid config at queries/q/metrics: [] should be non-empty"
         )
 
     def test_load_queries_no_databases(
@@ -895,7 +895,7 @@ class TestLoadConfig:
             load_config(fd, logger)
         assert (
             str(err.value)
-            == "Invalid config at queries/q/databases: [] is too short"
+            == "Invalid config at queries/q/databases: [] should be non-empty"
         )
 
     @pytest.mark.parametrize(
