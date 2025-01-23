@@ -354,21 +354,6 @@ class TestQueryLoop:
             labels={"database": "db", "l": "foo"},
         )
 
-    async def test_run_query_increase_db_error_count(
-        self,
-        query_tracker: QueryTracker,
-        config_data: dict[str, t.Any],
-        make_query_loop: MakeQueryLoop,
-        registry: MetricsRegistry,
-    ) -> None:
-        """Query errors are logged."""
-        config_data["databases"]["db"]["dsn"] = "sqlite:////invalid"
-        query_loop = make_query_loop()
-        await query_loop.start()
-        await query_tracker.wait_failures()
-        queries_metric = registry.get_metric("database_errors")
-        assert metric_values(queries_metric) == [1.0]
-
     async def test_run_query_increase_database_error_count(
         self,
         mocker: MockerFixture,
@@ -377,6 +362,7 @@ class TestQueryLoop:
         make_query_loop: MakeQueryLoop,
         registry: MetricsRegistry,
     ) -> None:
+        """Query errors are logged."""
         query_loop = make_query_loop()
         db = query_loop._databases["db"]
         mock_connect = mocker.patch.object(db._conn.engine, "connect")

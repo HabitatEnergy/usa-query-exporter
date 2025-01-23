@@ -29,6 +29,7 @@ from .config import (
 )
 from .db import (
     DataBase,
+    DATABASE_LABEL,
     DataBaseConnectError,
     DataBaseError,
     Query,
@@ -134,9 +135,7 @@ class QueryLoop:
         }
 
         self._databases: dict[str, Union[DataBase, SnowflakeDataBase]] = {
-            db_config.name: database_classes[db_config.conn_type](
-                db_config, logger=self._logger
-            )
+            db_config.name: database_classes[db_config.conn_type] (db_config, logger=self._logger)
             for db_config in self._config.databases.values()
         }
 

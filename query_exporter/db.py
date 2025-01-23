@@ -8,6 +8,8 @@ from collections.abc import (
 )
 from itertools import chain
 import logging
+import sys
+import re
 from time import perf_counter
 import typing as t
 from dataclasses import (
@@ -163,13 +165,14 @@ def create_db_engine(dsn: str) -> Engine:
 
 
 def create_snowflake_connection(dsn: str) -> SnowflakeConnection:
-    connection_config = re.search("(snowflake:\/\/)(.+)(:)(.+)(@)(.+)", dsn)
+    connection_config = re.search('(snowflake:\/\/)(.+)(:)(.+)(@)(.+)', dsn)
 
     return snowflake.connector.connect(
         user=connection_config.group(2),
         password=connection_config.group(4),
         account=connection_config.group(6),
     )
+
 
 
 class QueryMetric(t.NamedTuple):
@@ -202,6 +205,13 @@ class QueryResults(t.NamedTuple):
     def from_snowflake(cls, keys, results):
         return cls(
             [key.name.lower() for key in keys], [result for result in results]
+        )
+
+    @classmethod
+    def from_snowflake(cls, keys, results):
+        return cls(
+            [key.name.lower() for key in keys],
+            [result for result in results]
         )
 
 
@@ -314,6 +324,7 @@ class QueryExecution:
             raise InvalidQueryParameters(self.name)
 
 
+
 class WorkerAction:
     """An action to be called in the worker thread."""
 
@@ -348,8 +359,56 @@ class WorkerAction:
         self._loop.call_soon_threadsafe(partial(call, *args))
 
 
-class DataBaseConnection:
-    """A connection to a database engine."""
+class SnowflakeDataBase:
+    _pending_queries: int = 0
+
+    def __init__(
+        self,
+        config,
+        logger: logging.Logger = logging.getLogger(),
+    ):
+        self.config = config
+        self.logger = logger
+        self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+
+    async def __aenter__(self):
+        if not self._engine:
+            self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
+
+    async def close(self):
+        await self._engine.close()
+
+    async def execute(self, query: Query) -> MetricResults:
+        """Execute a query."""
+        self.logger.debug(
+            f'running query "{query.name}" on database "{self.config.name}"'
+        )
+        self._pending_queries += 1
+        try:
+            cur = self._engine.cursor()
+            cur.execute_async(query.sql)
+            cur.get_results_from_sfqid(cur.sfqid)
+            results = cur.fetchall()
+            return query.results(QueryResults.from_snowflake(cur.description, results))
+        except Exception as error:
+            message = str(error).strip()
+            self.logger.error(
+                f'error from database "{self.config.name}": {message}'
+            )
+            raise DataBaseQueryError(message)
+        finally:
+            assert self._pending_queries >= 0, "pending queries is negative"
+            self._pending_queries -= 1
+            if not self.config.keep_connected and not self._pending_queries:
+                self.close()
+
+
+class DataBase:
+    """A database to perform Queries."""
 
     _conn: Connection | None = None
     _worker: Thread | None = None
