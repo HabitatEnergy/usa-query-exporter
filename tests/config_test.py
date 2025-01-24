@@ -1,53 +1,23 @@
-import logging
+from pathlib import Path
+import typing as t
 
 import pytest
-import yaml
+from pytest_structlog import StructuredLogCapture
 
 from query_exporter.config import (
-    _get_parameters_sets,
-    _resolve_dsn,
     ConfigError,
-    DB_ERRORS_METRIC_NAME,
-    GLOBAL_METRICS,
+    _get_parameter_sets,
+    _resolve_dsn,
     load_config,
-    QUERIES_METRIC_NAME,
 )
 from query_exporter.db import QueryMetric
+from query_exporter.metrics import (
+    BUILTIN_METRICS,
+    DB_ERRORS_METRIC_NAME,
+    QUERIES_METRIC_NAME,
+)
 
-
-@pytest.fixture
-def logger(caplog):
-    with caplog.at_level("DEBUG"):
-        yield logging.getLogger()
-    caplog.clear()
-
-
-@pytest.fixture
-def config_full():
-    yield {
-        "databases": {"db": {"dsn": "sqlite://"}},
-        "metrics": {"m": {"type": "gauge", "labels": ["l1", "l2"]}},
-        "queries": {
-            "q": {
-                "interval": 10,
-                "databases": ["db"],
-                "metrics": ["m"],
-                "sql": "SELECT 1 as m",
-            }
-        },
-    }
-
-
-@pytest.fixture
-def write_config(tmp_path):
-    path = tmp_path / "config"
-
-    def write(data):
-        path.write_text(yaml.dump(data), "utf-8")
-        return path
-
-    yield write
-
+from .conftest import ConfigWriter
 
 CONFIG_UNKNOWN_DBS = {
     "databases": {},
@@ -129,9 +99,25 @@ CONFIG_INVALID_METRICS_PARAMS_MATRIX_DIFFERENT_KEYS = {
 
 
 class TestLoadConfig:
-    def test_load_databases_section(self, logger, write_config):
-        """The 'databases' section is loaded from the config file."""
-        config = {
+    def test_load_invalid(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "invalid.yaml"
+        config_file.write_text("foo: !env UNSET")
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
+        assert "variable UNSET undefined" in str(err.value)
+
+    def test_load_not_mapping(
+        self, tmp_path: Path, write_config: ConfigWriter
+    ) -> None:
+        config_file = write_config(["a", "b", "c"])
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
+        assert (
+            str(err.value) == f"File content is not a mapping: {config_file}"
+        )
+
+    def test_load_databases_section(self, write_config: ConfigWriter) -> None:
+        cfg = {
             "databases": {
                 "db1": {"dsn": "sqlite:///foo"},
                 "db2": {
@@ -143,12 +129,11 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
-        assert {"db1", "db2"} == set(result.databases)
-        database1 = result.databases["db1"]
-        database2 = result.databases["db2"]
+        config_file = write_config(cfg)
+        config = load_config([config_file])
+        assert {"db1", "db2"} == set(config.databases)
+        database1 = config.databases["db1"]
+        database2 = config.databases["db2"]
         assert database1.name == "db1"
         assert database1.dsn == "sqlite:///foo"
         assert database1.keep_connected
@@ -158,44 +143,56 @@ class TestLoadConfig:
         assert not database2.keep_connected
         assert not database2.autocommit
 
-    def test_load_databases_dsn_from_env(self, logger, write_config):
-        """The database DSN can be loaded from env."""
-        config = {
+    def test_load_databases_dsn_from_env(
+        self,
+        log: StructuredLogCapture,
+        write_config: ConfigWriter,
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "env:FOO"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            config = load_config(fd, logger, env={"FOO": "sqlite://"})
+        config_file = write_config(cfg)
+        config = load_config([config_file], env={"FOO": "sqlite://"})
         assert config.databases["db1"].dsn == "sqlite://"
+        assert log.has(
+            "deprecated DSN source 'env:FOO', use '!env FOO' instead"
+        )
 
-    def test_load_databases_missing_dsn(self, logger, write_config):
-        """An error is raised if the 'dsn' key is missing for a database."""
-        config = {"databases": {"db1": {}}, "metrics": {}, "queries": {}}
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+    def test_load_databases_missing_dsn(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg: dict[str, t.Any] = {
+            "databases": {"db1": {}},
+            "metrics": {},
+            "queries": {},
+        }
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == "Invalid config at databases/db1: 'dsn' is a required property"
         )
 
-    def test_load_databases_invalid_dsn(self, logger, write_config):
-        """An error is raised if the DSN is invalid."""
-        config = {
+    def test_load_databases_invalid_dsn(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "invalid"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == 'Invalid database DSN: "invalid"'
 
-    def test_load_databases_dsn_details(self, logger, write_config):
-        """The DSN can be specified as a dictionary."""
-        config = {
+    def test_load_databases_dsn_details(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {
                 "db1": {
                     "dsn": {
@@ -207,16 +204,14 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        config_file = write_config(cfg)
+        config = load_config([config_file])
         assert config.databases["db1"].dsn == "sqlite:///path/to/file"
 
     def test_load_databases_dsn_details_only_dialect(
-        self, logger, write_config
-    ):
-        """Only the "dialect" key is required in DSN."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {
                 "db1": {
                     "dsn": {
@@ -227,72 +222,77 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        config_file = write_config(cfg)
+        config = load_config([config_file])
         assert config.databases["db1"].dsn == "sqlite://"
 
-    def test_load_databases_dsn_invalid_env(self, logger, write_config):
-        """An error is raised if the DSN from environment is invalid."""
-        config = {
+    def test_load_databases_dsn_invalid_env(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "env:NOT-VALID"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == 'Invalid variable name: "NOT-VALID"'
 
-    def test_load_databases_dsn_undefined_env(self, logger, write_config):
-        """An error is raised if the environ variable for DSN is undefined."""
-        config = {
+    def test_load_databases_dsn_undefined_env(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "env:FOO"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger, env={})
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file], env={})
         assert str(err.value) == 'Undefined variable: "FOO"'
 
     def test_load_databases_dsn_from_file(
-        self, tmp_path, logger, write_config
-    ):
-        """The database DSN can be loaded from a file."""
+        self,
+        tmp_path: Path,
+        log: StructuredLogCapture,
+        write_config: ConfigWriter,
+    ) -> None:
         dsn = "sqlite:///foo"
         dsn_path = tmp_path / "dsn"
         dsn_path.write_text(dsn)
-        config = {
+        cfg = {
             "databases": {"db1": {"dsn": f"file:{dsn_path}"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        config_file = write_config(cfg)
+        config = load_config([config_file])
         assert config.databases["db1"].dsn == dsn
+        assert log.has(
+            f"deprecated DSN source 'file:{dsn_path}', use '!file {dsn_path}' instead"
+        )
 
     def test_load_databases_dsn_from_file_not_found(
-        self, logger, write_config
-    ):
-        """An error is raised if the DSN file can't be read."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "file:/not/found"}},
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == 'Unable to read dsn file : "/not/found": No such file or directory'
         )
 
-    def test_load_databases_no_labels(self, logger, write_config):
-        """If no labels are defined, an empty dict is returned."""
-        config = {
+    def test_load_databases_no_labels(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {
                 "db": {
                     "dsn": "sqlite://",
@@ -301,15 +301,13 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        config_file = write_config(cfg)
+        result = load_config([config_file])
         db = result.databases["db"]
         assert db.labels == {}
 
-    def test_load_databases_labels(self, logger, write_config):
-        """Labels can be defined for databases."""
-        config = {
+    def test_load_databases_labels(self, write_config: ConfigWriter) -> None:
+        cfg = {
             "databases": {
                 "db": {
                     "dsn": "sqlite://",
@@ -319,15 +317,15 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        config_file = write_config(cfg)
+        result = load_config([config_file])
         db = result.databases["db"]
         assert db.labels == {"label1": "value1", "label2": "value2"}
 
-    def test_load_databases_labels_not_all_same(self, logger, write_config):
-        """If not all databases have the same labels, an error is raised."""
-        config = {
+    def test_load_databases_labels_not_all_same(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {
                 "db1": {
                     "dsn": "sqlite://",
@@ -341,14 +339,15 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger, env={})
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file], env={})
         assert str(err.value) == "Not all databases define the same labels"
 
-    def test_load_databases_connect_sql(self, logger, write_config):
-        """Databases can have queries defined to run on connection."""
-        config = {
+    def test_load_databases_connect_sql(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {
                 "db": {
                     "dsn": "sqlite://",
@@ -358,14 +357,12 @@ class TestLoadConfig:
             "metrics": {},
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger, env={})
+        config_file = write_config(cfg)
+        result = load_config([config_file], env={})
         assert result.databases["db"].connect_sql == ["SELECT 1", "SELECT 2"]
 
-    def test_load_metrics_section(self, logger, write_config):
-        """The 'metrics' section is loaded from the config file."""
-        config = {
+    def test_load_metrics_section(self, write_config: ConfigWriter) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "sqlite://"}},
             "metrics": {
                 "metric1": {
@@ -388,100 +385,101 @@ class TestLoadConfig:
             },
             "queries": {},
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        config_file = write_config(cfg)
+        result = load_config([config_file])
         metric1 = result.metrics["metric1"]
         assert metric1.type == "summary"
         assert metric1.description == "metric one"
-        assert metric1.config == {
-            "labels": ["database", "label1", "label2"],
-            "expiration": 120,
-        }
+        assert metric1.labels == ("database", "label1", "label2")
+        assert metric1.config == {"expiration": 120}
         metric2 = result.metrics["metric2"]
         assert metric2.type == "histogram"
         assert metric2.description == "metric two"
+        assert metric2.labels == ("database",)
         assert metric2.config == {
-            "labels": ["database"],
             "buckets": [10, 100, 1000],
             "expiration": None,
         }
         metric3 = result.metrics["metric3"]
         assert metric3.type == "enum"
         assert metric3.description == "metric three"
+        assert metric3.labels == ("database",)
         assert metric3.config == {
-            "labels": ["database"],
             "states": ["on", "off"],
             "expiration": 100,
         }
-        # global metrics
+        # builtin metrics
         assert result.metrics.get(DB_ERRORS_METRIC_NAME) is not None
         assert result.metrics.get(QUERIES_METRIC_NAME) is not None
 
-    def test_load_metrics_overlap_reserved_label(self, logger, write_config):
-        """An error is raised if reserved labels are used."""
-        config = {
+    def test_load_metrics_overlap_reserved_label(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "gauge", "labels": ["database"]}},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == 'Labels for metric "m" overlap with reserved/database ones: database'
         )
 
-    def test_load_metrics_overlap_database_label(self, logger, write_config):
-        """An error is raised if database labels are used for metrics."""
-        config = {
+    def test_load_metrics_overlap_database_label(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "sqlite://", "labels": {"l1": "v1"}}},
             "metrics": {"m": {"type": "gauge", "labels": ["l1"]}},
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == 'Labels for metric "m" overlap with reserved/database ones: l1'
         )
 
-    @pytest.mark.parametrize("global_name", list(GLOBAL_METRICS))
+    @pytest.mark.parametrize("builtin_metric_name", list(BUILTIN_METRICS))
     def test_load_metrics_reserved_name(
-        self, config_full, write_config, global_name
-    ):
-        """An error is raised if a reserved label name is used."""
-        config_full["metrics"][global_name] = {"type": "counter"}
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        builtin_metric_name: str,
+    ) -> None:
+        sample_config["metrics"][builtin_metric_name] = {"type": "counter"}
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
-            == f'Label name "{global_name} is reserved for builtin metric'
+            == f'Label name "{builtin_metric_name} is reserved for builtin metric'
         )
 
-    def test_load_metrics_unsupported_type(self, logger, write_config):
-        """An error is raised if an unsupported metric type is passed."""
-        config = {
+    def test_load_metrics_unsupported_type(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db1": {"dsn": "sqlite://"}},
             "metrics": {
                 "metric1": {"type": "info", "description": "info metric"}
             },
             "queries": {},
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == (
             "Invalid config at metrics/metric1/type: 'info' is not one of "
             "['counter', 'enum', 'gauge', 'histogram', 'summary']"
         )
 
-    def test_load_queries_section(self, logger, write_config):
-        """The 'queries' section is loaded from the config file."""
-        config = {
+    def test_load_queries_section(self, write_config: ConfigWriter) -> None:
+        cfg = {
             "databases": {
                 "db1": {"dsn": "sqlite:///foo"},
                 "db2": {"dsn": "sqlite:///bar"},
@@ -505,25 +503,26 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        config_file = write_config(cfg)
+        result = load_config([config_file])
+        assert len(result.queries) == 2
         query1 = result.queries["q1"]
         assert query1.name == "q1"
         assert query1.databases == ["db1"]
         assert query1.metrics == [QueryMetric("m1", ["l1", "l2"])]
         assert query1.sql == "SELECT 1"
-        assert query1.parameters == {}
+        assert len(query1.executions) == 1
         query2 = result.queries["q2"]
         assert query2.name == "q2"
         assert query2.databases == ["db2"]
         assert query2.metrics == [QueryMetric("m2", [])]
         assert query2.sql == "SELECT 2"
-        assert query2.parameters == {}
+        assert len(query2.executions) == 1
 
-    def test_load_queries_section_with_parameters(self, logger, write_config):
-        """Queries can have parameters."""
-        config = {
+    def test_load_queries_section_with_parameters(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary", "labels": ["l"]}},
             "queries": {
@@ -539,33 +538,30 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
-        query1 = result.queries["q[params0]"]
-        assert query1.name == "q[params0]"
-        assert query1.databases == ["db"]
-        assert query1.metrics == [QueryMetric("m", ["l"])]
-        assert query1.sql == "SELECT :param1 AS l, :param2 AS m"
-        assert query1.parameters == {
+        config_file = write_config(cfg)
+        result = load_config([config_file])
+        assert len(result.queries) == 1
+        query = result.queries["q"]
+        assert query.name == "q"
+        assert query.databases == ["db"]
+        assert query.metrics == [QueryMetric("m", ["l"])]
+        assert query.sql == "SELECT :param1 AS l, :param2 AS m"
+        query_exec1, query_exec2 = query.executions
+        assert query_exec1.name == "q[params1]"
+        assert query_exec1.parameters == {
             "param1": "label1",
             "param2": 10,
         }
-        query2 = result.queries["q[params1]"]
-        assert query2.name == "q[params1]"
-        assert query2.databases == ["db"]
-        assert query2.metrics == [QueryMetric("m", ["l"])]
-        assert query2.sql == "SELECT :param1 AS l, :param2 AS m"
-        assert query2.parameters == {
+        assert query_exec2.name == "q[params2]"
+        assert query_exec2.parameters == {
             "param1": "label2",
             "param2": 20,
         }
 
     def test_load_queries_section_with_parameters_matrix(
-        self, logger, write_config
-    ):
-        """Queries can have parameters matrix."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary", "labels": ["l"]}},
             "queries": {
@@ -581,55 +577,42 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        config_file = write_config(cfg)
+        result = load_config([config_file])
+        assert len(result.queries) == 1
+        query = result.queries["q"]
+        assert query.databases == ["db"]
+        assert query.metrics == [QueryMetric("m", ["l"])]
+        assert (
+            query.sql == "SELECT :marketplace__name AS l, :item__status AS m"
+        )
 
-        assert len(result.queries) == 4
-
-        # check common props for each query
-        for query_name, query in result.queries.items():
-            assert query.databases == ["db"]
-            assert query.metrics == [QueryMetric("m", ["l"])]
-            assert (
-                query.sql
-                == "SELECT :marketplace__name AS l, :item__status AS m"
-            )
-
-        # Q1
-        query1 = result.queries["q[params0]"]
-        assert query1.name == "q[params0]"
-        assert query1.parameters == {
+        query_exec1, query_exec2, query_exec3, query_exec4 = query.executions
+        assert query_exec1.name == "q[params1]"
+        assert query_exec1.parameters == {
             "marketplace__name": "amazon",
             "item__status": "active",
         }
-        # Q2
-        query2 = result.queries["q[params1]"]
-        assert query2.name == "q[params1]"
-        assert query2.parameters == {
+        assert query_exec2.name == "q[params2]"
+        assert query_exec2.parameters == {
             "marketplace__name": "ebay",
             "item__status": "active",
         }
-        # Q3
-        query3 = result.queries["q[params2]"]
-        assert query3.name == "q[params2]"
-        assert query3.parameters == {
+        assert query_exec3.name == "q[params3]"
+        assert query_exec3.parameters == {
             "marketplace__name": "amazon",
             "item__status": "inactive",
         }
-        # Q4
-        query4 = result.queries["q[params3]"]
-        assert query4.name == "q[params3]"
-        assert query4.parameters == {
+        assert query_exec4.name == "q[params4]"
+        assert query_exec4.parameters == {
             "marketplace__name": "ebay",
             "item__status": "inactive",
         }
 
     def test_load_queries_section_with_wrong_parameters(
-        self, logger, write_config
-    ):
-        """An error is raised if query parameters don't match."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary", "labels": ["l"]}},
             "queries": {
@@ -645,19 +628,18 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
-            == 'Parameters for query "q[params0]" don\'t match those from SQL'
+            == 'Parameters for query "q[params1]" don\'t match those from SQL'
         )
 
     def test_load_queries_section_with_schedule_and_interval(
-        self, logger, write_config
-    ):
-        """An error is raised if query schedule and interval are both present."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary"}},
             "queries": {
@@ -670,17 +652,18 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == 'Invalid schedule for query "q": both interval and schedule specified'
         )
 
-    def test_load_queries_section_invalid_schedule(self, logger, write_config):
-        """An error is raised if query schedule has wrong format."""
-        config = {
+    def test_load_queries_section_invalid_schedule(
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary"}},
             "queries": {
@@ -692,22 +675,22 @@ class TestLoadConfig:
                 },
             },
         }
-        config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        config_file = write_config(cfg)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == 'Invalid schedule for query "q": invalid schedule format'
         )
 
     def test_load_queries_section_timeout(
-        self, logger, config_full, write_config
-    ):
-        """Query configuration can include a timeout."""
-        config_full["queries"]["q"]["timeout"] = 2.0
-        config_file = write_config(config_full)
-        with config_file.open() as fd:
-            result = load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        sample_config["queries"]["q"]["timeout"] = 2.0
+        config_file = write_config(sample_config)
+        result = load_config([config_file])
         query1 = result.queries["q"]
         assert query1.timeout == 2.0
 
@@ -729,13 +712,16 @@ class TestLoadConfig:
         ],
     )
     def test_load_queries_section_invalid_timeout(
-        self, logger, config_full, write_config, timeout, error_message
-    ):
-        """An error is raised if query timeout is invalid."""
-        config_full["queries"]["q"]["timeout"] = timeout
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        timeout: float,
+        error_message: str,
+    ) -> None:
+        sample_config["queries"]["q"]["timeout"] = timeout
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == error_message
 
     @pytest.mark.parametrize(
@@ -774,44 +760,49 @@ class TestLoadConfig:
         ],
     )
     def test_configuration_incorrect(
-        self, logger, write_config, config, error_message
-    ):
-        """An error is raised if configuration is incorrect."""
+        self,
+        write_config: ConfigWriter,
+        config: dict[str, t.Any],
+        error_message: str,
+    ) -> None:
         config_file = write_config(config)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == error_message
 
     def test_configuration_warning_unused(
-        self, caplog, logger, config_full, write_config
-    ):
-        """A warning is logged if unused entries are present in config."""
-        config_full["databases"]["db2"] = {"dsn": "sqlite://"}
-        config_full["databases"]["db3"] = {"dsn": "sqlite://"}
-        config_full["metrics"]["m2"] = {"type": "gauge"}
-        config_full["metrics"]["m3"] = {"type": "gauge"}
-        config_file = write_config(config_full)
-        with config_file.open() as fd:
-            load_config(fd, logger)
-        assert caplog.messages == [
-            'unused entries in "databases" section: db2, db3',
-            'unused entries in "metrics" section: m2, m3',
-        ]
+        self,
+        log: StructuredLogCapture,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        sample_config["databases"]["db2"] = {"dsn": "sqlite://"}
+        sample_config["databases"]["db3"] = {"dsn": "sqlite://"}
+        sample_config["metrics"]["m2"] = {"type": "gauge"}
+        sample_config["metrics"]["m3"] = {"type": "gauge"}
+        config_file = write_config(sample_config)
+        load_config([config_file])
+        assert log.has(
+            "unused config entries",
+            section="databases",
+            entries=["db2", "db3"],
+        )
+        assert log.has(
+            "unused config entries", section="metrics", entries=["m2", "m3"]
+        )
 
     def test_load_queries_missing_interval_default_to_none(
-        self, logger, write_config
-    ):
-        """If the interval is not specified, it defaults to None."""
-        config = {
+        self, write_config: ConfigWriter
+    ) -> None:
+        cfg = {
             "databases": {"db": {"dsn": "sqlite://"}},
             "metrics": {"m": {"type": "summary"}},
             "queries": {
                 "q": {"databases": ["db"], "metrics": ["m"], "sql": "SELECT 1"}
             },
         }
-        config_file = write_config(config)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        config_file = write_config(cfg)
+        config = load_config([config_file])
         assert config.queries["q"].interval is None
 
     @pytest.mark.parametrize(
@@ -827,34 +818,38 @@ class TestLoadConfig:
         ],
     )
     def test_load_queries_interval(
-        self, logger, config_full, write_config, interval, value
-    ):
-        """The query interval can be specified with suffixes."""
-        config_full["queries"]["q"]["interval"] = interval
-        config_file = write_config(config_full)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        interval: str | int | None,
+        value: int | None,
+    ) -> None:
+        sample_config["queries"]["q"]["interval"] = interval
+        config_file = write_config(sample_config)
+        config = load_config([config_file])
         assert config.queries["q"].interval == value
 
     def test_load_queries_interval_not_specified(
-        self, logger, config_full, write_config
-    ):
-        """If the interval is not specified, it's set to None."""
-        del config_full["queries"]["q"]["interval"]
-        config_file = write_config(config_full)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        del sample_config["queries"]["q"]["interval"]
+        config_file = write_config(sample_config)
+        config = load_config([config_file])
         assert config.queries["q"].interval is None
 
     @pytest.mark.parametrize("interval", ["1x", "wrong", "1.5m"])
     def test_load_queries_invalid_interval_string(
-        self, logger, config_full, write_config, interval
-    ):
-        """An invalid string query interval raises an error."""
-        config_full["queries"]["q"]["interval"] = interval
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        interval: str,
+    ) -> None:
+        sample_config["queries"]["q"]["interval"] = interval
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert str(err.value) == (
             "Invalid config at queries/q/interval: "
             f"'{interval}' does not match '^[0-9]+[smhd]?$'"
@@ -862,37 +857,43 @@ class TestLoadConfig:
 
     @pytest.mark.parametrize("interval", [0, -20])
     def test_load_queries_invalid_interval_number(
-        self, logger, config_full, write_config, interval
-    ):
-        """An invalid integer query interval raises an error."""
-        config_full["queries"]["q"]["interval"] = interval
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        interval: int,
+    ) -> None:
+        sample_config["queries"]["q"]["interval"] = interval
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == f"Invalid config at queries/q/interval: {interval} is less than the minimum of 1"
         )
 
-    def test_load_queries_no_metrics(self, logger, config_full, write_config):
-        """An error is raised if no metrics are configured."""
-        config_full["queries"]["q"]["metrics"] = []
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+    def test_load_queries_no_metrics(
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        sample_config["queries"]["q"]["metrics"] = []
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == "Invalid config at queries/q/metrics: [] should be non-empty"
         )
 
     def test_load_queries_no_databases(
-        self, logger, config_full, write_config
-    ):
-        """An error is raised if no databases are configured."""
-        config_full["queries"]["q"]["databases"] = []
-        config_file = write_config(config_full)
-        with pytest.raises(ConfigError) as err, config_file.open() as fd:
-            load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        sample_config["queries"]["q"]["databases"] = []
+        config_file = write_config(sample_config)
+        with pytest.raises(ConfigError) as err:
+            load_config([config_file])
         assert (
             str(err.value)
             == "Invalid config at queries/q/databases: [] should be non-empty"
@@ -911,19 +912,106 @@ class TestLoadConfig:
         ],
     )
     def test_load_metrics_expiration(
-        self, logger, config_full, write_config, expiration, value
-    ):
-        """The metric series expiration time can be specified with suffixes."""
-        config_full["metrics"]["m"]["expiration"] = expiration
-        config_file = write_config(config_full)
-        with config_file.open() as fd:
-            config = load_config(fd, logger)
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+        expiration: str | int | None,
+        value: int | None,
+    ) -> None:
+        sample_config["metrics"]["m"]["expiration"] = expiration
+        config_file = write_config(sample_config)
+        config = load_config([config_file])
         assert config.metrics["m"].config["expiration"] == value
+
+    def test_load_multiple_files(
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        file_full = write_config(sample_config)
+        file1 = write_config({"databases": sample_config["databases"]})
+        file2 = write_config({"metrics": sample_config["metrics"]})
+        file3 = write_config({"queries": sample_config["queries"]})
+        assert load_config([file1, file2, file3]) == load_config([file_full])
+
+    def test_load_multiple_files_combine(
+        self,
+        write_config: ConfigWriter,
+    ) -> None:
+        file1 = write_config(
+            {
+                "databases": {"db1": {"dsn": "sqlite://"}},
+                "metrics": {"m1": {"type": "gauge"}},
+                "queries": {
+                    "q1": {
+                        "databases": ["db1"],
+                        "metrics": ["m1"],
+                        "sql": "SELECT 1 AS m1",
+                    }
+                },
+            }
+        )
+        file2 = write_config(
+            {
+                "databases": {"db2": {"dsn": "sqlite://"}},
+                "metrics": {"m2": {"type": "gauge"}},
+                "queries": {
+                    "q2": {
+                        "databases": ["db2"],
+                        "metrics": ["m2"],
+                        "sql": "SELECT 2 AS m2",
+                    }
+                },
+            }
+        )
+        config = load_config([file1, file2])
+        assert set(config.databases) == {"db1", "db2"}
+        assert set(config.metrics) == {"m1", "m2"} | BUILTIN_METRICS
+        assert set(config.queries) == {"q1", "q2"}
+
+    def test_load_multiple_files_duplicated_database(
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        file1 = write_config(sample_config)
+        file2 = write_config({"databases": sample_config["databases"]})
+        with pytest.raises(ConfigError) as err:
+            load_config([file1, file2])
+        assert (
+            str(err.value)
+            == 'Duplicated entries in the "databases" section: db'
+        )
+
+    def test_load_multiple_files_duplicated_metric(
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        file1 = write_config(sample_config)
+        file2 = write_config({"metrics": sample_config["metrics"]})
+        with pytest.raises(ConfigError) as err:
+            load_config([file1, file2])
+        assert (
+            str(err.value) == 'Duplicated entries in the "metrics" section: m'
+        )
+
+    def test_load_multiple_files_duplicated_query(
+        self,
+        sample_config: dict[str, t.Any],
+        write_config: ConfigWriter,
+    ) -> None:
+        file1 = write_config(sample_config)
+        file2 = write_config({"queries": sample_config["queries"]})
+        with pytest.raises(ConfigError) as err:
+            load_config([file1, file2])
+        assert (
+            str(err.value) == 'Duplicated entries in the "queries" section: q'
+        )
 
 
 class TestResolveDSN:
-    def test_all_details(self):
-        """The DSN can be specified as a dictionary."""
+    def test_all_details(self) -> None:
         details = {
             "dialect": "postgresql",
             "user": "user",
@@ -938,16 +1026,14 @@ class TestResolveDSN:
             == "postgresql://user:secret@dbsever:1234/mydb?foo=bar&baz=bza"
         )
 
-    def test_db_as_path(self):
-        """If the db name is a path, it's treated accordingly."""
+    def test_db_as_path(self) -> None:
         details = {
             "dialect": "sqlite",
             "database": "/path/to/file",
         }
         assert _resolve_dsn(details, {}) == "sqlite:///path/to/file"
 
-    def test_encode_user_password(self):
-        """The user and password are encoded."""
+    def test_encode_user_password(self) -> None:
         details = {
             "dialect": "postgresql",
             "user": "us%r",
@@ -960,8 +1046,7 @@ class TestResolveDSN:
             == "postgresql://us%25r:my+pass@dbsever/mydb"
         )
 
-    def test_encode_options(self):
-        """Option parmaeters are encoded."""
+    def test_encode_options(self) -> None:
         details = {
             "dialect": "postgresql",
             "database": "/mydb",
@@ -976,9 +1061,9 @@ class TestResolveDSN:
         )
 
 
-class TestGetParametersSets:
-    def test_list(self):
-        params = [
+class TestGetParameterSets:
+    def test_list(self) -> None:
+        params: list[dict[str, t.Any]] = [
             {
                 "param1": 100,
                 "param2": "foo",
@@ -988,10 +1073,10 @@ class TestGetParametersSets:
                 "param2": "bar",
             },
         ]
-        assert list(_get_parameters_sets(params)) == params
+        assert list(_get_parameter_sets(params)) == params
 
-    def test_dict(self):
-        params = {
+    def test_dict(self) -> None:
+        params: dict[str, list[dict[str, t.Any]]] = {
             "param1": [
                 {
                     "sub1": 100,
@@ -1021,7 +1106,7 @@ class TestGetParametersSets:
                 },
             ],
         }
-        assert list(_get_parameters_sets(params)) == [
+        assert list(_get_parameter_sets(params)) == [
             {
                 "param1__sub1": 100,
                 "param1__sub2": "foo",

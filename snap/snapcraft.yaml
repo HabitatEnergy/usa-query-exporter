@@ -12,8 +12,10 @@ description: |
   the command, managed via a Systemd service.
   To run the latter:
 
-    - create or edit `/var/snap/query-exporter/current/config.yaml` with the
+    - create `/var/snap/query-exporter/current/config.yaml` with the desired
       configuration
+    - optionally, create a `/var/snap/query-exporter/current/.env` file with
+      environment variables definitions for additional config options
     - run `sudo snap restart query-exporter`
 
   Currently supported databases are:
@@ -24,12 +26,20 @@ description: |
     - Microsoft SQL Server (`mssql://`)
     - IBM DB2 (`db2://`) on supported architectures (x86_64, ppc64le and
       s390x)
-
-license: GPL-3.0+
+    - ClickHouse (`clickhouse+native://`)
 icon: logo.svg
+license: GPL-3.0+
+website: https://github.com/albertodonato/query-exporter
+source-code: https://github.com/albertodonato/query-exporter
+contact: https://github.com/albertodonato/query-expoter/issues
+issues: https://github.com/albertodonato/query-exporter/issues
+
 confinement: strict
 grade: stable
-base: core22
+base: core24
+platforms:
+  amd64:
+  arm64:
 
 apps:
   daemon:
@@ -51,10 +61,13 @@ parts:
     plugin: python
     source: .
     source-type: git
+    python-requirements:
+      - requirements.txt
     python-packages:
+      - .
+      - clickhouse-sqlalchemy
       - ibm-db-sa; platform_machine == 'x86_64'
       - ibm-db-sa; platform_machine == 'ppc64le'
-      - ibm-db-sa; platform_machine == 's390x'
       - mysqlclient
       - psycopg2
       - pyodbc
@@ -62,18 +75,23 @@ parts:
       - libmysqlclient-dev
       - libpq-dev
       - libssl-dev
+      - pkg-config
       - unixodbc-dev
     stage-packages:
       - libmysqlclient21
-      - libodbc1
+      - libodbc2
       - libpq5
       - libxml2
+    override-build: |
+      craftctl default
+      _QUERY_EXPORTER_COMPLETE=bash_source query-exporter > "$CRAFT_PART_INSTALL/query-exporter.completion"
     prime:
       - bin/python3
       - bin/query-exporter
       - etc
       - lib
       - pyvenv.cfg
+      - query-exporter.completion
       - usr/lib
 
   wrappers:

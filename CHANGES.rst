@@ -1,3 +1,92 @@
+v3.1.0 - 2025-01-08
+===================
+
+- Support passing multiple configuration files (#108).
+- Support YAML tags for ``env``, ``file``, and ``include`` (#188).
+
+**NOTE**:
+  The ``env:`` and ``file:`` prefixes for DSNs string form is now deprecated in
+  favor of the corresponding tags, and will be dropped in the next major release.
+
+
+v3.0.0 - 2024-12-30
+===================
+
+- Convert all logging to structured (#199).
+- Look for ``config.yaml`` configuration file by default, configuration file
+  can be optionally specified with ``--config``.
+- Support passing configuration options via environment variables.
+- Support loading ``.env`` file with environment variables for configuration.
+- [docker] Run exporter from the ``/config`` directory, supporting having
+  ``.env`` file there.
+- [snap] Run exporter from the ``$SNAP_DATA`` directory, supporting having
+  ``.env`` file there.
+
+**NOTE**:
+  This release introduces a few breaking changes from the 2.x series,
+  specificially:
+
+  - The ``--log-level`` option now takes lowercase names for levels.
+  - The configuration file is no longer a required option, since
+    ``config.yaml`` in the current directory is looked up automatically. If a
+    different file is specified, it should be done as an optional parameter
+    with ``--config``.
+  - Metrics of type ``counter`` are now set by default to values returned by
+    queries. To preserve the old default behavior of incrementing it by the
+    returned value, ``increment`` should be set to ``true`` in the metric
+    configuration.
+
+
+v2.11.1 - 2024-11-19
+====================
+
+- Update ``prometheus-aioexporter`` dependency range.
+
+
+v2.11.0 - 2024-11-19
+====================
+
+- Switch to SQLAlchemy 2.
+- Require Python 3.11.
+- [docker] Use Python 3.13 on Debian Bookwork as base image.
+- [snap] Rebase on core24.
+
+
+v2.10.0 - 2024-01-28
+====================
+
+- Fix columns names in InvalidResultColumnNames being reported the wrong way
+  round (#185).
+- Add a metric to track query execution timestamp (#178).
+- [docker] Define a volume containing the config file (#158).
+- [docker] Add support for ODBC version 17, support alternative versions.
+- Switch to ruff for formatting.
+
+
+v2.9.2 - 2023-10-28
+===================
+
+- Fix main script (#171).
+- Typos fixes in documentation.
+
+
+v2.9.1 - 2023-10-28
+===================
+
+- Update dependency to ``prometheus-aioexporter`` 2.0.
+- [snap] Add support for ClickHouse.
+- [docker] Add support for ClickHouse.
+
+
+v2.9.0 - 2023-08-18
+===================
+
+- Add ``increment`` flag for counter metrics (#124).
+- Rework project setup.
+- [docker] Add ``pymssql`` package (#133).
+- [docker] Fix setup for Microsoft repository (#159).
+
+
 v2.8.3 - 2022-07-16
 ===================
 
@@ -8,23 +97,23 @@ v2.8.3 - 2022-07-16
 v2.8.2 - 2022-07-16
 ===================
 
-- Require Python 3.10
-- [snap] Change base to core22
-- [docker] Use Python 3.10
-- [docker] Base on Debian 11
+- Require Python 3.10.
+- [snap] Change base to core22.
+- [docker] Use Python 3.10.
+- [docker] Base on Debian 11.
 
 
 v2.8.1 - 2022-02-18
 ===================
 
-- Require `sqlalchemy_aio` 0.17.0, drop workaround for previous versions
+- Require ``sqlalchemy_aio`` 0.17.0, drop workaround for previous versions
   (#105).
 
 
 v2.8.0 - 2022-01-18
 ===================
 
-- Add support for paramters matrix in queries.
+- Add support for parameters matrix in queries.
 - Allow freetext name for databases in config (#99).
 
 
@@ -89,7 +178,7 @@ v2.4.0 - 2020-06-20
 ===================
 
 - Add a ``query_latency`` metric to track query execution times. This is
-  lebeled by database and query name (#46).
+  labeled by database and query name (#46).
 
 
 v2.3.0 - 2020-06-04
@@ -159,7 +248,7 @@ v2.0.0 - 2020-02-02
 
  - Only named parameters with the ``:param`` style are now supported, queries
    using positional parameters or other styles of named parameters need to be
-   udpated.
+   updated.
  - Literal ``:`` at the beginning of a word need to be escaped (with backslash)
    to avoid confusion with parameter markers. Colons that appear inside words
    don't need to be escaped.
@@ -209,13 +298,13 @@ v1.8.0 - 2019-05-25
 - Disable queries that will certainly always fail (e.g. because of invalid.
   returned column names/number) (#6).
 - Support disconnecting from after each query (#8).
-- Rework tests to use actualy SQLite in-memory databases instead of fakes.
+- Rework tests to use actually SQLite in-memory databases instead of fakes.
 
 
 v1.7.0 - 2019-04-07
 ===================
 
-- Add a ``queries`` and ``database_errors`` metrics lebeled by database (#1).
+- Add a ``queries`` and ``database_errors`` metrics labeled by database (#1).
 - Support database DSNs defined as ``env:<VARNAME>`` to supply the dns from the
   environment (#5).
 
@@ -239,7 +328,7 @@ v1.4.0 - 2018-06-08
 ===================
 
 - Support for python3.7.
-- Use asynctest for asyncronous tests.
+- Use asynctest for asynchronous tests.
 - Updated toolrack dependency.
 
 

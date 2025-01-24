@@ -2,40 +2,45 @@
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from decimal import Decimal
-from logging import Logger
+from itertools import chain
 import time
-from typing import (
-    Any,
-    cast,
-    Union,
-)
+import typing as t
 
 from croniter import croniter
 from dateutil.tz import gettz
-from prometheus_aioexporter import MetricsRegistry
-from prometheus_client import Metric
+from prometheus_aioexporter import (
+    MetricConfig,
+    MetricsRegistry,
+)
+from prometheus_client import Counter
+from prometheus_client.metrics import MetricWrapperBase
+import structlog
 from toolrack.aio import (
     PeriodicCall,
     TimedCall,
 )
 
-from query_exporter.config import (
-    Config,
-    DB_ERRORS_METRIC_NAME,
-    QUERIES_METRIC_NAME,
-    QUERY_LATENCY_METRIC_NAME,
-)
-from query_exporter.db import (
-    DataBase,
-    SnowflakeDataBase,
+from .config import (
     DATABASE_LABEL,
+    Config,
+)
+from .db import (
+    DataBase,
     DataBaseConnectError,
     DataBaseError,
     Query,
+    QueryExecution,
     QueryTimeoutExpired,
+    SnowflakeDataBase,
+)
+from .metrics import (
+    DB_ERRORS_METRIC_NAME,
+    QUERIES_METRIC_NAME,
+    QUERY_LATENCY_METRIC_NAME,
+    QUERY_TIMESTAMP_METRIC_NAME,
 )
 
 
@@ -57,7 +62,7 @@ class MetricsLastSeen:
         name: str,
         labels: dict[str, str],
         timestamp: float,
-    ):
+    ) -> None:
         """Update last seen for a metric with a set of labels to given timestamp."""
         if not self._expirations.get(name):
             return
@@ -79,41 +84,38 @@ class MetricsLastSeen:
         """
         expired = {}
         for name, metric_last_seen in self._last_seen.items():
-            expiration = cast(int, self._expirations[name])
-            expired[name] = [
+            expiration = t.cast(int, self._expirations[name])
+            expired_labels = [
                 label_values
                 for label_values, last_seen in metric_last_seen.items()
                 if timestamp > last_seen + expiration
             ]
+            if expired_labels:
+                expired[name] = expired_labels
+
         # clear expired series from tracking
         for name, series_labels in expired.items():
             for label_values in series_labels:
                 del self._last_seen[name][label_values]
+                if not self._last_seen[name]:
+                    del self._last_seen[name]
         return expired
 
 
 class QueryLoop:
     """Run database queries and collect metrics."""
 
-    _METRIC_METHODS = {
-        "counter": "inc",
-        "gauge": "set",
-        "histogram": "observe",
-        "summary": "observe",
-        "enum": "state",
-    }
-
     def __init__(
         self,
         config: Config,
         registry: MetricsRegistry,
-        logger: Logger,
+        logger: structlog.stdlib.BoundLogger | None = None,
     ):
         self._config = config
         self._registry = registry
-        self._logger = logger
-        self._timed_queries: list[Query] = []
-        self._aperiodic_queries: list[Query] = []
+        self._logger = logger or structlog.get_logger()
+        self._timed_query_executions: list[QueryExecution] = []
+        self._aperiodic_query_executions: list[QueryExecution] = []
         # map query names to their TimedCalls
         self._timed_calls: dict[str, TimedCall] = {}
         # map query names to list of database names
@@ -127,33 +129,39 @@ class QueryLoop:
         )
 
         database_classes = {
-            'snowflake': SnowflakeDataBase,
-            'generic': DataBase
+            "snowflake": SnowflakeDataBase,
+            "generic": DataBase,
         }
 
-        self._databases: dict[str, Union[DataBase, SnowflakeDataBase]] = {
-            db_config.name: database_classes[db_config.conn_type] (db_config, logger=self._logger)
+        self._databases: dict[str, DataBase | SnowflakeDataBase] = {
+            db_config.name: database_classes[db_config.conn_type](
+                db_config, logger=self._logger
+            )
             for db_config in self._config.databases.values()
         }
 
-        for query in self._config.queries.values():
-            if query.timed:
-                self._timed_queries.append(query)
+        for query_execution in chain(
+            *(query.executions for query in self._config.queries.values())
+        ):
+            if query_execution.query.timed:
+                self._timed_query_executions.append(query_execution)
             else:
-                self._aperiodic_queries.append(query)
+                self._aperiodic_query_executions.append(query_execution)
 
-    async def start(self):
+    async def start(self) -> None:
         """Start timed queries execution."""
-        for query in self._timed_queries:
+        for query_execution in self._timed_query_executions:
+            query = query_execution.query
+            call: TimedCall
             if query.interval:
-                call = PeriodicCall(self._run_query, query)
-                call.start(query.interval)
-            else:
-                call = TimedCall(self._run_query, query)
+                call = PeriodicCall(self._run_query, query_execution)
+                call.start(query.interval, now=True)
+            elif query.schedule is not None:
+                call = TimedCall(self._run_query, query_execution)
                 call.start(self._loop_times_iter(query.schedule))
-            self._timed_calls[query.name] = call
+            self._timed_calls[query_execution.name] = call
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop timed query execution."""
         coros = (call.stop() for call in self._timed_calls.values())
         await asyncio.gather(*coros, return_exceptions=True)
@@ -161,45 +169,51 @@ class QueryLoop:
         coros = (db.close() for db in self._databases.values())
         await asyncio.gather(*coros, return_exceptions=True)
 
-    def clear_expired_series(self):
+    def clear_expired_series(self) -> None:
         """Clear metric series that have expired."""
-        expired_series = self._last_seen.expire_series(self._timestamp())
+        expired_series = self._last_seen.expire_series(self._loop.time())
         for name, label_values in expired_series.items():
             metric = self._registry.get_metric(name)
             for values in label_values:
                 metric.remove(*values)
 
-    async def run_aperiodic_queries(self):
+    async def run_aperiodic_queries(self) -> None:
         """Run queries on request."""
         coros = (
-            self._execute_query(query, dbname)
-            for query in self._aperiodic_queries
-            for dbname in query.databases
+            self._execute_query(query_execution, dbname)
+            for query_execution in self._aperiodic_query_executions
+            for dbname in query_execution.query.databases
         )
         await asyncio.gather(*coros, return_exceptions=True)
 
-    def _loop_times_iter(self, schedule: str):
+    def _loop_times_iter(self, schedule: str) -> Iterator[float | int]:
         """Wrap a croniter iterator to sync time with the loop clock."""
-        cron_iter = croniter(schedule, self._now())
+        cron_iter = croniter(schedule, datetime.now(gettz()))
         while True:
             cc = next(cron_iter)
             t = time.time()
             delta = cc - t
             yield self._loop.time() + delta
 
-    def _run_query(self, query: Query):
+    def _run_query(self, query_execution: QueryExecution) -> None:
         """Periodic task to run a query."""
-        for dbname in query.databases:
-            self._loop.create_task(self._execute_query(query, dbname))
+        for dbname in query_execution.query.databases:
+            self._loop.create_task(
+                self._execute_query(query_execution, dbname)
+            )
 
-    async def _execute_query(self, query: Query, dbname: str):
+    @t.no_type_check
+    async def _execute_query(
+        self, query_execution: QueryExecution, dbname: str
+    ) -> None:
         """'Execute a Query on a DataBase."""
-        if await self._remove_if_dooomed(query, dbname):
+        if await self._remove_if_dooomed(query_execution, dbname):
             return
 
         db = self._databases[dbname]
+        query = query_execution.query
         try:
-            metric_results = await db.execute(query)
+            metric_results = await db.execute(query_execution)
         except DataBaseConnectError:
             self._increment_db_error_count(db)
         except QueryTimeoutExpired:
@@ -208,10 +222,11 @@ class QueryLoop:
             self._increment_queries_count(db, query, "error")
             if error.fatal:
                 self._logger.debug(
-                    f'removing doomed query "{query.name}" '
-                    f'for database "{dbname}"'
+                    "removing failed query",
+                    query=query_execution.name,
+                    database=dbname,
                 )
-                self._doomed_queries[query.name].add(dbname)
+                self._doomed_queries[query_execution.name].add(dbname)
         else:
             for result in metric_results.results:
                 self._update_metric(
@@ -221,100 +236,123 @@ class QueryLoop:
                 self._update_query_latency_metric(
                     db, query, metric_results.latency
                 )
+            if metric_results.timestamp:
+                self._update_query_timestamp_metric(
+                    db, query, metric_results.timestamp
+                )
             self._increment_queries_count(db, query, "success")
 
-    async def _remove_if_dooomed(self, query: Query, dbname: str) -> bool:
-        """Remove a query if it will never work.
+    async def _remove_if_dooomed(
+        self, query_execution: QueryExecution, dbname: str
+    ) -> bool:
+        """Remove a query execution if it will never work.
 
         Return whether the query has been removed for the database.
 
         """
-        if dbname not in self._doomed_queries[query.name]:
+        if dbname not in self._doomed_queries[query_execution.name]:
             return False
 
-        if set(query.databases) == self._doomed_queries[query.name]:
+        query = query_execution.query
+
+        if set(query.databases) == self._doomed_queries[query_execution.name]:
             # the query has failed on all databases
             if query.timed:
-                self._timed_queries.remove(query)
-                call = self._timed_calls.pop(query.name, None)
+                self._timed_query_executions.remove(query_execution)
+                call = self._timed_calls.pop(query_execution.name, None)
                 if call is not None:
                     await call.stop()
             else:
-                self._aperiodic_queries.remove(query)
+                self._aperiodic_query_executions.remove(query_execution)
         return True
 
     def _update_metric(
         self,
         database: DataBase,
         name: str,
-        value: Any,
+        value: t.Any,
         labels: Mapping[str, str] | None = None,
-    ):
+    ) -> None:
         """Update value for a metric."""
         if value is None:
             # don't fail is queries that count return NULL
             value = 0.0
         elif isinstance(value, Decimal):
             value = float(value)
-        metric = self._config.metrics[name]
-        method = self._METRIC_METHODS[metric.type]
-        if metric.type == "counter" and not metric.config.get(
-            "increment", True
-        ):
-            method = "set"
+        metric_config = self._config.metrics[name]
         all_labels = {DATABASE_LABEL: database.config.name}
         all_labels.update(database.config.labels)
         if labels:
             all_labels.update(labels)
-        labels_string = ",".join(
-            f'{label}="{value}"' for label, value in sorted(all_labels.items())
-        )
+        method = self._get_metric_method(metric_config)
         self._logger.debug(
-            f'updating metric "{name}" {method} {value} {{{labels_string}}}'
+            "updating metric",
+            metric=name,
+            method=method,
+            value=value,
+            labels=all_labels,
         )
         metric = self._registry.get_metric(name, labels=all_labels)
         self._update_metric_value(metric, method, value)
-        self._last_seen.update(name, all_labels, self._timestamp())
+        self._last_seen.update(name, all_labels, self._loop.time())
+
+    def _get_metric_method(self, metric: MetricConfig) -> str:
+        if metric.type == "counter" and not metric.config.get(
+            "increment", False
+        ):
+            method = "set"
+        else:
+            method = {
+                "counter": "inc",
+                "gauge": "set",
+                "histogram": "observe",
+                "summary": "observe",
+                "enum": "state",
+            }[metric.type]
+        return method
 
     def _update_metric_value(
-        self, metric: Metric, method: str, value: Any
+        self, metric: MetricWrapperBase, method: str, value: t.Any
     ) -> None:
         if metric._type == "counter" and method == "set":
             # counters can only be incremented, directly set the underlying value
-            metric._value.set(value)
+            t.cast(Counter, metric)._value.set(value)
         else:
             getattr(metric, method)(value)
 
     def _increment_queries_count(
         self, database: DataBase, query: Query, status: str
-    ):
+    ) -> None:
         """Increment count of queries in a status for a database."""
         self._update_metric(
             database,
             QUERIES_METRIC_NAME,
             1,
-            labels={"query": query.config_name, "status": status},
+            labels={"query": query.name, "status": status},
         )
 
-    def _increment_db_error_count(self, database: DataBase):
+    def _increment_db_error_count(self, database: DataBase) -> None:
         """Increment number of errors for a database."""
         self._update_metric(database, DB_ERRORS_METRIC_NAME, 1)
 
     def _update_query_latency_metric(
         self, database: DataBase, query: Query, latency: float
-    ):
+    ) -> None:
         """Update latency metric for a query on a database."""
         self._update_metric(
             database,
             QUERY_LATENCY_METRIC_NAME,
             latency,
-            labels={"query": query.config_name},
+            labels={"query": query.name},
         )
 
-    def _now(self) -> datetime:
-        """Return the current time with local timezone."""
-        return datetime.now().replace(tzinfo=gettz())
-
-    def _timestamp(self) -> float:
-        """Return the current timestamp."""
-        return self._now().timestamp()
+    def _update_query_timestamp_metric(
+        self, database: DataBase, query: Query, timestamp: float
+    ) -> None:
+        """Update timestamp metric for a query on a database."""
+        self._update_metric(
+            database,
+            QUERY_TIMESTAMP_METRIC_NAME,
+            timestamp,
+            labels={"query": query.name},
+        )

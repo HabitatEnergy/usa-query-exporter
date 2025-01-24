@@ -2,22 +2,14 @@
 
 from collections import defaultdict
 from collections.abc import Mapping
-from copy import deepcopy
-from dataclasses import (
-    dataclass,
-    field,
-)
+import dataclasses
 from functools import reduce
 from importlib import resources
 import itertools
-from logging import Logger
 import os
 from pathlib import Path
 import re
-from typing import (
-    Any,
-    IO,
-)
+import typing as t
 from urllib.parse import (
     quote_plus,
     urlencode,
@@ -25,46 +17,21 @@ from urllib.parse import (
 
 import jsonschema
 from prometheus_aioexporter import MetricConfig
+import structlog
 import yaml
 
-from query_exporter.db import (
-    create_db_engine,
-    create_snowflake_connection,
-    DATABASE_LABEL,
-    DataBaseError,
+from .db import (
+    DataBaseConfig,
     InvalidQueryParameters,
     InvalidQuerySchedule,
     Query,
     QueryMetric,
 )
+from .metrics import BUILTIN_METRICS, get_builtin_metric_configs
+from .yaml import load_yaml_config
 
-# metric for counting database errors
-DB_ERRORS_METRIC_NAME = "database_errors"
-_DB_ERRORS_METRIC_CONFIG = MetricConfig(
-    DB_ERRORS_METRIC_NAME,
-    "Number of database errors",
-    "counter",
-    {"labels": []},
-)
-# metric for counting performed queries
-QUERIES_METRIC_NAME = "queries"
-_QUERIES_METRIC_CONFIG = MetricConfig(
-    QUERIES_METRIC_NAME,
-    "Number of database queries",
-    "counter",
-    {"labels": ["query", "status"]},
-)
-# metric for counting queries execution latency
-QUERY_LATENCY_METRIC_NAME = "query_latency"
-_QUERY_LATENCY_METRIC_CONFIG = MetricConfig(
-    QUERY_LATENCY_METRIC_NAME,
-    "Query execution latency",
-    "histogram",
-    {"labels": ["query"]},
-)
-GLOBAL_METRICS = frozenset(
-    [DB_ERRORS_METRIC_NAME, QUERIES_METRIC_NAME, QUERY_LATENCY_METRIC_NAME]
-)
+# Label used to tag metrics by database
+DATABASE_LABEL = "database"
 
 # regexp for validating environment variables names
 _ENV_VAR_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -74,29 +41,7 @@ class ConfigError(Exception):
     """Configuration is invalid."""
 
 
-@dataclass(frozen=True)
-class DataBaseConfig:
-    """Configuration for a database."""
-
-    name: str
-    dsn: str
-    conn_type: str = 'generic'
-    connect_sql: list[str] = field(default_factory=list)
-    labels: dict[str, str] = field(default_factory=dict)
-    keep_connected: bool = True
-    autocommit: bool = True
-
-    def __post_init__(self):
-        try:
-            if self.conn_type == 'snowflake':
-                create_snowflake_connection(self.dsn)
-            else:
-                create_db_engine(self.dsn)
-        except DataBaseError as e:
-            raise ConfigError(str(e))
-
-
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Config:
     """Top-level configuration."""
 
@@ -109,14 +54,22 @@ class Config:
 Environ = Mapping[str, str]
 
 # Content for the "parameters" config option
-ParametersConfig = list[dict[str, Any]] | dict[str, list[dict[str, Any]]]
+ParametersConfig = list[dict[str, t.Any]] | dict[str, list[dict[str, t.Any]]]
 
 
 def load_config(
-    config_fd: IO, logger: Logger, env: Environ = os.environ
+    paths: list[Path],
+    logger: structlog.stdlib.BoundLogger | None = None,
+    env: Environ = os.environ,
 ) -> Config:
     """Load YAML config from file."""
-    data = defaultdict(dict, yaml.safe_load(config_fd))
+    if logger is None:
+        logger = structlog.get_logger()
+
+    try:
+        data = _load_config(paths)
+    except yaml.scanner.ScannerError as e:
+        raise ConfigError(str(e))
     _validate_config(data)
     databases, database_labels = _get_databases(data["databases"], env)
     extra_labels = frozenset([DATABASE_LABEL]) | database_labels
@@ -129,8 +82,39 @@ def load_config(
     return config
 
 
+def _load_config(paths: list[Path]) -> dict[str, t.Any]:
+    """Return the combined configuration from provided files."""
+    config: dict[str, t.Any] = defaultdict(dict)
+    for path in paths:
+        conf = load_yaml_config(path)
+        if not isinstance(conf, dict):
+            raise ConfigError(f"File content is not a mapping: {path}")
+        data = defaultdict(dict, conf)
+        for key in (field.name for field in dataclasses.fields(Config)):
+            entries = data.pop(key, None)
+            if entries is not None:
+                if overlap_entries := set(config[key]) & set(entries):
+                    overlap_list = ", ".join(sorted(overlap_entries))
+                    raise ConfigError(
+                        f'Duplicated entries in the "{key}" section: {overlap_list}'
+                    )
+                config[key].update(entries)
+        config.update(data)
+    return config
+
+
+def _validate_config(config: dict[str, t.Any]) -> None:
+    schema_file = resources.files("query_exporter") / "schemas" / "config.yaml"
+    schema = yaml.safe_load(schema_file.read_bytes())
+    try:
+        jsonschema.validate(config, schema)
+    except jsonschema.ValidationError as e:
+        path = "/".join(str(item) for item in e.absolute_path)
+        raise ConfigError(f"Invalid config at {path}: {e.message}")
+
+
 def _get_databases(
-    configs: dict[str, dict[str, Any]], env: Environ
+    configs: dict[str, dict[str, t.Any]], env: Environ
 ) -> tuple[dict[str, DataBaseConfig], frozenset[str]]:
     """Return a dict mapping names to database configs, and a set of database labels."""
     databases = {}
@@ -148,6 +132,13 @@ def _get_databases(
                 keep_connected=config.get("keep-connected", True),
                 autocommit=config.get("autocommit", True),
             )
+            if "autocommit" in config:
+                logger = structlog.get_logger()
+                logger.warn(
+                    f"deprecated 'autocommit' option for database '{name}'",
+                    database=name,
+                )
+
     except Exception as e:
         raise ConfigError(str(e))
 
@@ -163,38 +154,27 @@ def _get_databases(
 
 
 def _get_metrics(
-    metrics: dict[str, dict[str, Any]], extra_labels: frozenset[str]
+    metrics: dict[str, dict[str, t.Any]], extra_labels: frozenset[str]
 ) -> dict[str, MetricConfig]:
     """Return a dict mapping metric names to their configuration."""
-    configs = {}
-    # global metrics
-    for metric_config in (
-        _DB_ERRORS_METRIC_CONFIG,
-        _QUERIES_METRIC_CONFIG,
-        _QUERY_LATENCY_METRIC_CONFIG,
-    ):
-        # make a copy since labels are not immutable
-        metric_config = deepcopy(metric_config)
-        metric_config.config["labels"].extend(extra_labels)
-        metric_config.config["labels"].sort()
-        configs[metric_config.name] = metric_config
-    # other metrics
+    configs = get_builtin_metric_configs(extra_labels)
     for name, config in metrics.items():
         _validate_metric_config(name, config, extra_labels)
         metric_type = config.pop("type")
-        config.setdefault("labels", []).extend(extra_labels)
-        config["labels"].sort()
+        labels = set(config.pop("labels", ())) | extra_labels
         config["expiration"] = _convert_interval(config.get("expiration"))
         description = config.pop("description", "")
-        configs[name] = MetricConfig(name, description, metric_type, config)
+        configs[name] = MetricConfig(
+            name, description, metric_type, labels=labels, config=config
+        )
     return configs
 
 
 def _validate_metric_config(
-    name: str, config: dict[str, Any], extra_labels: frozenset[str]
-):
+    name: str, config: dict[str, t.Any], extra_labels: frozenset[str]
+) -> None:
     """Validate a metric configuration stanza."""
-    if name in GLOBAL_METRICS:
+    if name in BUILTIN_METRICS:
         raise ConfigError(f'Label name "{name} is reserved for builtin metric')
     labels = set(config.get("labels", ()))
     overlap_labels = labels & extra_labels
@@ -206,7 +186,7 @@ def _validate_metric_config(
 
 
 def _get_queries(
-    configs: dict[str, dict[str, Any]],
+    configs: dict[str, dict[str, t.Any]],
     database_names: frozenset[str],
     metrics: dict[str, MetricConfig],
     extra_labels: frozenset[str],
@@ -217,61 +197,44 @@ def _get_queries(
     for name, config in configs.items():
         _validate_query_config(name, config, database_names, metric_names)
         query_metrics = _get_query_metrics(config, metrics, extra_labels)
-        parameters = config.get("parameters")
-
-        query_args = {
-            "databases": config["databases"],
-            "metrics": query_metrics,
-            "sql": config["sql"].strip(),
-            "timeout": config.get("timeout"),
-            "interval": _convert_interval(config.get("interval")),
-            "schedule": config.get("schedule"),
-            "config_name": name,
-        }
-
         try:
-            if parameters:
-                parameters_sets = _get_parameters_sets(parameters)
-                queries.update(
-                    (
-                        f"{name}[params{index}]",
-                        Query(
-                            name=f"{name}[params{index}]",
-                            parameters=params,
-                            **query_args,
-                        ),
-                    )
-                    for index, params in enumerate(parameters_sets)
-                )
-            else:
-                queries[name] = Query(name, **query_args)
+            queries[name] = Query(
+                name=name,
+                databases=config["databases"],
+                metrics=query_metrics,
+                sql=config["sql"].strip(),
+                timeout=config.get("timeout"),
+                interval=_convert_interval(config.get("interval")),
+                schedule=config.get("schedule"),
+                parameter_sets=_get_parameter_sets(config.get("parameters")),
+            )
         except (InvalidQueryParameters, InvalidQuerySchedule) as e:
             raise ConfigError(str(e))
     return queries
 
 
 def _get_query_metrics(
-    config: dict[str, Any],
+    config: dict[str, t.Any],
     metrics: dict[str, MetricConfig],
     extra_labels: frozenset[str],
 ) -> list[QueryMetric]:
     """Return QueryMetrics for a query."""
 
-    def _metric_labels(labels: list[str]) -> list[str]:
+    def _metric_labels(labels: t.Iterable[str]) -> list[str]:
         return sorted(set(labels) - extra_labels)
 
     return [
-        QueryMetric(name, _metric_labels(metrics[name].config["labels"]))
+        QueryMetric(name, _metric_labels(metrics[name].labels))
         for name in config["metrics"]
     ]
 
 
 def _validate_query_config(
     name: str,
-    config: dict[str, Any],
+    config: dict[str, t.Any],
     database_names: frozenset[str],
     metric_names: frozenset[str],
-):
+) -> None:
     """Validate a query configuration stanza."""
     unknown_databases = set(config["databases"]) - database_names
     if unknown_databases:
@@ -325,7 +288,7 @@ def _convert_interval(interval: int | str | None) -> int | None:
     return int(interval) * multiplier
 
 
-def _resolve_dsn(dsn: str | dict[str, Any], env: Environ) -> str:
+def _resolve_dsn(dsn: str | dict[str, t.Any], env: Environ) -> str:
     """Build and resolve the database DSN string from the right source."""
 
     def from_env(varname: str) -> str:
@@ -354,12 +317,18 @@ def _resolve_dsn(dsn: str | dict[str, Any], env: Environ) -> str:
         source, value = dsn.split(":", 1)
         handler = origins.get(source)
         if handler is not None:
+            logger = structlog.get_logger()
+            logger.warn(
+                f"deprecated DSN source '{dsn}', use '!{source} {value}' instead",
+                source=source,
+                value=value,
+            )
             return handler(value)
 
     return dsn
 
 
-def _build_dsn(details: dict[str, Any]) -> str:
+def _build_dsn(details: dict[str, t.Any]) -> str:
     """Build a DSN string from details."""
     url = f"{details['dialect']}://"
     user = details.get("user")
@@ -387,17 +356,9 @@ def _build_dsn(details: dict[str, Any]) -> str:
     return url
 
 
-def _validate_config(config: dict[str, Any]):
-    schema_file = resources.files("query_exporter") / "schemas" / "config.yaml"
-    schema = yaml.safe_load(schema_file.read_bytes())
-    try:
-        jsonschema.validate(config, schema)
-    except jsonschema.ValidationError as e:
-        path = "/".join(str(item) for item in e.absolute_path)
-        raise ConfigError(f"Invalid config at {path}: {e.message}")
-
-
-def _warn_if_unused(config: Config, logger: Logger):
+def _warn_if_unused(
+    config: Config, logger: structlog.stdlib.BoundLogger
+) -> None:
     """Warn if there are unused databases or metrics defined."""
     used_dbs: set[str] = set()
     used_metrics: set[str] = set()
@@ -405,30 +366,36 @@ def _warn_if_unused(config: Config, logger: Logger):
         used_dbs.update(query.databases)
         used_metrics.update(metric.name for metric in query.metrics)
 
-    unused_dbs = sorted(set(config.databases) - used_dbs)
-    if unused_dbs:
+    if unused_dbs := sorted(set(config.databases) - used_dbs):
         logger.warning(
-            f"unused entries in \"databases\" section: {', '.join(unused_dbs)}"
+            "unused config entries",
+            section="databases",
+            entries=unused_dbs,
         )
-    unused_metrics = sorted(
-        set(config.metrics) - GLOBAL_METRICS - used_metrics
-    )
-    if unused_metrics:
+    if unused_metrics := sorted(
+        set(config.metrics) - BUILTIN_METRICS - used_metrics
+    ):
         logger.warning(
-            f"unused entries in \"metrics\" section: {', '.join(unused_metrics)}"
+            "unused config entries",
+            section="metrics",
+            entries=unused_metrics,
         )
 
 
-def _get_parameters_sets(parameters: ParametersConfig) -> list[dict[str, Any]]:
+def _get_parameter_sets(
+    parameters: ParametersConfig | None,
+) -> list[dict[str, t.Any]]:
     """Return an sequence of set of paramters with their values."""
+    if not parameters:
+        return []
     if isinstance(parameters, dict):
         return _get_parameters_matrix(parameters)
     return parameters
 
 
 def _get_parameters_matrix(
-    parameters: dict[str, list[dict[str, Any]]]
-) -> list[dict[str, Any]]:
+    parameters: dict[str, list[dict[str, t.Any]]],
+) -> list[dict[str, t.Any]]:
     """Return parameters combinations from a matrix."""
     # first, flatten dict like
     #
