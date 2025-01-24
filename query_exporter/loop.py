@@ -134,7 +134,7 @@ class QueryLoop:
         }
 
         self._databases: dict[str, DataBase | SnowflakeDataBase] = {
-            db_config.name: database_classes[db_config.conn_type](  # type: ignore[misc]
+            db_config.name: database_classes[db_config.conn_type](
                 db_config, logger=self._logger
             )
             for db_config in self._config.databases.values()

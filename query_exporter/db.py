@@ -381,7 +381,8 @@ class SnowflakeDataBase:
         await self.close()
 
     async def close(self) -> None:
-        await self._engine.close()
+        self._engine.close()
+        return
 
     async def execute(self, query: Query) -> MetricResults:
         """Execute a query."""
@@ -392,10 +393,10 @@ class SnowflakeDataBase:
         try:
             cur = self._engine.cursor()
             cur.execute_async(query.sql)
-            cur.get_results_from_sfqid(cur.sfqid)
+            cur.get_results_from_sfqid(cur.sfqid)  # type: ignore[arg-type]
             results = cur.fetchall()
             return query.results(
-                QueryResults.from_snowflake(cur.description, results)
+                QueryResults.from_snowflake(cur.description, results)  # type: ignore[arg-type]
             )
         except Exception as error:
             message = str(error).strip()
