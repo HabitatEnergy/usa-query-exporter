@@ -40,11 +40,6 @@ dependencies = [
   "snowflake-connector-python",
 ]
 optional-dependencies.testing = [
-  "PyYAML",
-  "SQLAlchemy<1.4",
-  "sqlalchemy_aio>=0.17",
-  "toolrack",
-  "snowflake-connector-python",
   "pytest",
   "pytest-asyncio",
   "pytest-mock",
