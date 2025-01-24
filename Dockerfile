@@ -18,7 +18,7 @@ COPY . /srcdir
 RUN python3 -m venv /virtualenv
 ENV PATH="/virtualenv/bin:$PATH"
 RUN pip install \
-    -r /srcdir/requirements.txt \
+    -r /srcdir/ \
     cx-Oracle \
     clickhouse-sqlalchemy \
     "ibm-db-sa; platform_machine == 'x86_64' or platform_machine == 'ppc64le'" \
