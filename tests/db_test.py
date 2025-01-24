@@ -1,6 +1,5 @@
 import asyncio
 from collections.abc import AsyncIterator, Iterator
-import logging
 from threading import Thread
 import time
 import typing as t

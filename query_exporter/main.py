@@ -20,11 +20,12 @@ from query_exporter.config import (
     ConfigError,
     load_config,
 )
+
 from .loop import QueryLoop
 from .metrics import QUERY_INTERVAL_METRIC_NAME
 
 
-class QueryExporterScript(PrometheusExporterScript):
+class QueryExporterScript(PrometheusExporterScript):  # type: ignore[misc]
     """Periodically run database queries and export results to Prometheus."""
 
     name = "query-exporter"

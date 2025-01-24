@@ -6,12 +6,6 @@ from collections.abc import (
     Iterable,
     Sequence,
 )
-from itertools import chain
-import logging
-import sys
-import re
-from time import perf_counter
-import typing as t
 from dataclasses import (
     InitVar,
     dataclass,
@@ -19,6 +13,8 @@ from dataclasses import (
 )
 from functools import partial
 from itertools import chain
+import logging
+import re
 from threading import (
     Thread,
     current_thread,
@@ -31,6 +27,9 @@ from types import TracebackType
 import typing as t
 
 from croniter import croniter
+import snowflake.connector
+from snowflake.connector.connection import SnowflakeConnection
+from snowflake.connector.cursor import ResultMetadata
 from sqlalchemy import (
     create_engine,
     event,
@@ -48,8 +47,6 @@ from sqlalchemy.exc import (
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.elements import TextClause
 import structlog
-import snowflake.connector
-from snowflake.connector.connection import SnowflakeConnection
 
 # Timeout for a query
 QueryTimeout = int | float
@@ -165,14 +162,15 @@ def create_db_engine(dsn: str) -> Engine:
 
 
 def create_snowflake_connection(dsn: str) -> SnowflakeConnection:
-    connection_config = re.search('(snowflake:\/\/)(.+)(:)(.+)(@)(.+)', dsn)
+    connection_config = re.search(r"(snowflake:\/\/)(.+)(:)(.+)(@)(.+)", dsn)
 
+    if not connection_config:
+        raise ValueError("not a valid snowflake connection string")
     return snowflake.connector.connect(
         user=connection_config.group(2),
         password=connection_config.group(4),
         account=connection_config.group(6),
     )
-
 
 
 class QueryMetric(t.NamedTuple):
@@ -202,16 +200,14 @@ class QueryResults(t.NamedTuple):
         return cls(keys, rows, timestamp=timestamp, latency=latency)
 
     @classmethod
-    def from_snowflake(cls, keys, results):
-        return cls(
-            [key.name.lower() for key in keys], [result for result in results]
-        )
-
-    @classmethod
-    def from_snowflake(cls, keys, results):
+    def from_snowflake(
+        cls,
+        keys: list[ResultMetadata],
+        results: list[tuple[t.Any, ...] | dict[t.Any, t.Any]],
+    ) -> "QueryResults":
         return cls(
             [key.name.lower() for key in keys],
-            [result for result in results]
+            [result for result in results],  # type: ignore[misc]
         )
 
 
@@ -324,7 +320,6 @@ class QueryExecution:
             raise InvalidQueryParameters(self.name)
 
 
-
 class WorkerAction:
     """An action to be called in the worker thread."""
 
@@ -364,22 +359,28 @@ class SnowflakeDataBase:
 
     def __init__(
         self,
-        config,
+        config: DataBaseConfig,
         logger: logging.Logger = logging.getLogger(),
-    ):
+    ) -> None:
         self.config = config
         self.logger = logger
-        self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+        self._engine: SnowflakeConnection = create_snowflake_connection(
+            self.config.dsn
+        )
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "SnowflakeDataBase":
         if not self._engine:
-            self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
+            self._engine: SnowflakeConnection = create_snowflake_connection(  # type: ignore[no-redef]
+                self.config.dsn
+            )
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(
+        self, exc_type: t.Any, exc_value: t.Any, traceback: t.Any
+    ) -> None:
         await self.close()
 
-    async def close(self):
+    async def close(self) -> None:
         await self._engine.close()
 
     async def execute(self, query: Query) -> MetricResults:
@@ -393,7 +394,9 @@ class SnowflakeDataBase:
             cur.execute_async(query.sql)
             cur.get_results_from_sfqid(cur.sfqid)
             results = cur.fetchall()
-            return query.results(QueryResults.from_snowflake(cur.description, results))
+            return query.results(
+                QueryResults.from_snowflake(cur.description, results)
+            )
         except Exception as error:
             message = str(error).strip()
             self.logger.error(
@@ -404,10 +407,10 @@ class SnowflakeDataBase:
             assert self._pending_queries >= 0, "pending queries is negative"
             self._pending_queries -= 1
             if not self.config.keep_connected and not self._pending_queries:
-                self.close()
+                await self.close()
 
 
-class DataBase:
+class DataBaseConnection:
     """A database to perform Queries."""
 
     _conn: Connection | None = None
@@ -525,60 +528,6 @@ class DataBase:
         call = WorkerAction(func, *args, **kwargs)
         await self._queue.put(call)
         return await call.result()
-
-
-class SnowflakeDataBase:
-    _pending_queries: int = 0
-
-    def __init__(
-        self,
-        config,
-        logger: logging.Logger = logging.getLogger(),
-    ):
-        self.config = config
-        self.logger = logger
-        self._engine: SnowflakeConnection = create_snowflake_connection(
-            self.config.dsn
-        )
-
-    async def __aenter__(self):
-        if not self._engine:
-            self._engine: SnowflakeConnection = create_snowflake_connection(
-                self.config.dsn
-            )
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
-
-    async def close(self):
-        await self._engine.close()
-
-    async def execute(self, query: Query) -> MetricResults:
-        """Execute a query."""
-        self.logger.debug(
-            f'running query "{query.name}" on database "{self.config.name}"'
-        )
-        self._pending_queries += 1
-        try:
-            cur = self._engine.cursor()
-            cur.execute_async(query.sql)
-            cur.get_results_from_sfqid(cur.sfqid)
-            results = cur.fetchall()
-            return query.results(
-                QueryResults.from_snowflake(cur.description, results)
-            )
-        except Exception as error:
-            message = str(error).strip()
-            self.logger.error(
-                f'error from database "{self.config.name}": {message}'
-            )
-            raise DataBaseQueryError(message)
-        finally:
-            assert self._pending_queries >= 0, "pending queries is negative"
-            self._pending_queries -= 1
-            if not self.config.keep_connected and not self._pending_queries:
-                self.close()
 
 
 class DataBase:

@@ -29,7 +29,6 @@ from .config import (
 )
 from .db import (
     DataBase,
-    DATABASE_LABEL,
     DataBaseConnectError,
     DataBaseError,
     Query,
@@ -134,8 +133,10 @@ class QueryLoop:
             "generic": DataBase,
         }
 
-        self._databases: dict[str, Union[DataBase, SnowflakeDataBase]] = {
-            db_config.name: database_classes[db_config.conn_type] (db_config, logger=self._logger)
+        self._databases: dict[str, DataBase | SnowflakeDataBase] = {
+            db_config.name: database_classes[db_config.conn_type](  # type: ignore[misc]
+                db_config, logger=self._logger
+            )
             for db_config in self._config.databases.values()
         }
 
@@ -201,6 +202,7 @@ class QueryLoop:
                 self._execute_query(query_execution, dbname)
             )
 
+    @t.no_type_check
     async def _execute_query(
         self, query_execution: QueryExecution, dbname: str
     ) -> None:
