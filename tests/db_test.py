@@ -21,7 +21,6 @@ from sqlalchemy.sql.elements import TextClause
 from query_exporter.db import (
     DataBase,
     DataBaseConfig,
-    DataBaseConnectError,
     DataBaseConnection,
     DataBaseError,
     DataBaseQueryError,
