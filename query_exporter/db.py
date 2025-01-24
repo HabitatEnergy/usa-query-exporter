@@ -384,8 +384,9 @@ class SnowflakeDataBase:
         self._engine.close()
         return
 
-    async def execute(self, query: Query) -> MetricResults:
+    async def execute(self, query_excecution: QueryExecution) -> MetricResults:
         """Execute a query."""
+        query = query_excecution.query
         self.logger.debug(
             f'running query "{query.name}" on database "{self.config.name}"'
         )
