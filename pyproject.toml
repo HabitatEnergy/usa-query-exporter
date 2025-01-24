@@ -34,10 +34,10 @@ dependencies = [
   "prometheus-client",
   "python-dateutil",
   "pyyaml",
+  "snowflake-connector-python",
   "sqlalchemy>=2",
   "structlog",
   "toolrack>=4",
-  "snowflake-connector-python",
 ]
 optional-dependencies.testing = [
   "pytest",

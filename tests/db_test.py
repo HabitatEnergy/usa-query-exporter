@@ -46,6 +46,11 @@ class TestInvalidResultCount:
 
 
 class TestCreateDBEngine:
+    def test_instantiate_missing_engine_module(self) -> None:
+        with pytest.raises(DataBaseError) as error:
+            create_db_engine("postgresql:///foo")
+        assert str(error.value) == 'module "psycopg2" not found'
+
     @pytest.mark.parametrize("dsn", ["foo-bar", "unknown:///db"])
     def test_instantiate_invalid_dsn(self, dsn: str) -> None:
         with pytest.raises(DataBaseError) as error:
@@ -432,18 +437,14 @@ class TestDataBase:
     async def test_connect_lock(self, db: DataBase) -> None:
         await asyncio.gather(db.connect(), db.connect())
 
-    @pytest.mark.asyncio
-    async def test_connect_error(self):
-        """A DataBaseConnectError is raised if database connection fails."""
+    async def test_connect_error(self) -> None:
         config = DataBaseConfig(name="db", dsn="sqlite:////invalid")
         db = DataBase(config)
         with pytest.raises(DataBaseConnectError) as error:
             await db.connect()
         assert "unable to open database file" in str(error.value)
 
-    @pytest.mark.asyncio
-    async def test_connect_sql(self, mocker):
-        """If connect_sql is specified, it's run at connection."""
+    async def test_connect_sql(self, mocker: MockerFixture) -> None:
         config = DataBaseConfig(
             name="db",
             dsn="sqlite://",

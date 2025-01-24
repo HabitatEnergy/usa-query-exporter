@@ -21,7 +21,7 @@ class TestLoadYAMLConfig:
         )
         assert load_yaml_config(config) == {"a": "b", "c": "d"}
 
-    @pytest.mark.parametrize("env_value", ["foo", 3, False, {"foo": "bar"}])
+    @pytest.mark.parametrize("env_value", ["foo", 3, False, {"foo": "bar"}])  # type: ignore[misc]
     def test_load_env(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, env_value: t.Any
     ) -> None:
