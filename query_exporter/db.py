@@ -603,7 +603,7 @@ class DataBase:
     async def execute(self, query_execution: QueryExecution) -> MetricResults:
         """Execute a query."""
         await self.connect()
-        self.logger.debug("run query", query=query_execution.name)
+        self.logger.info("run query", query=query_execution.name)
         self._pending_queries += 1
         query = query_execution.query
         try:

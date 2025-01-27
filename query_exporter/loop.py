@@ -285,7 +285,7 @@ class QueryLoop:
         if labels:
             all_labels.update(labels)
         method = self._get_metric_method(metric_config)
-        self._logger.debug(
+        self._logger.info(
             "updating metric",
             metric=name,
             method=method,
