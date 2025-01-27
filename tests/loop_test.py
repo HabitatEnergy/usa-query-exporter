@@ -310,21 +310,21 @@ class TestQueryLoop:
         await query_loop.start()
         await query_tracker.wait_queries()
         assert [
-            log.debug(
+            log.info(
                 "updating metric",
                 metric="m",
                 method="set",
                 value=100.0,
                 labels={"database": "db"},
             ),
-            log.debug(
+            log.info(
                 "updating metric",
                 metric="query_latency",
                 method="observe",
                 value=ANY,
                 labels={"database": "db", "query": "q"},
             ),
-            log.debug(
+            log.info(
                 "updating metric",
                 metric="queries",
                 method="inc",
@@ -347,7 +347,7 @@ class TestQueryLoop:
         await query_tracker.wait_queries()
         assert log.has(
             "updating metric",
-            level="debug",
+            level="info",
             metric="m",
             method="set",
             value=100.0,
