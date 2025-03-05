@@ -1,0 +1,38 @@
+categories:
+  - title: '🚀 Features'
+    labels:
+      - 'enhancement'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'bug'
+  - title: '🧹 Maintenance'
+    label: 'chore'
+  - title: '🧰 Dependencies'
+    label: 'dependencies'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
+version-resolver:
+  major:
+    labels:
+      - 'major'
+  minor:
+    labels:
+      - 'minor'
+  patch:
+    labels:
+      - 'patch'
+  default: minor
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Contributors
+
+  cheers for the commits $CONTRIBUTORS !
+
+name-template: 'usa-query-exporter-v$RESOLVED_VERSION'
+tag-template: 'usa-query-exporter-v$RESOLVED_VERSION'
+tag-prefix: usa-query-exporter-v
+include-paths:
+  - "./"

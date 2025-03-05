@@ -1,0 +1,68 @@
+name: Query Exporter - Merge
+
+on:
+  push:
+    branches:
+      - "main"
+    paths:
+      - "./"
+
+permissions:
+  contents: read
+
+jobs:
+  run_tests:
+    runs-on: [self-hosted, linux, x64, python-3.11]
+    steps:
+      - name: Run Linting
+        uses: ./.github/workflows/ci.yml
+        with:
+          job: lint
+
+      - name: Run Checks
+        uses: ./.github/workflows/ci.yml
+        with:
+          job: check
+
+      - name: Run Tests
+        uses: ./.github/workflows/ci.yml
+        with:
+          job: test
+
+  get-aws-ecr-credentials:
+    runs-on: [self-hosted, linux, x64, python-3.11]
+    outputs:
+      ecr_password: ${{ steps.ecr-password.outputs.ecr_password }}
+    steps:
+      - name: export aws ecr password
+        id: ecr-password
+        run: |
+          echo "ecr_password=$(AWS_PROFILE=usa aws ecr get-login-password --region us-east-1)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    runs-on: [self-hosted, linux, x64, python-3.11]
+    needs: run_tests
+    steps:
+      - name: Publish Image
+        uses: HabitatEnergy/infra-shared-actions/publish-image@main
+        with:
+          aws-profile: usa
+          tag: main
+          repository: "417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter"
+          dockerfile: ./Dockerfile
+          context: ./
+          push: true
+          working-directory: ./
+
+  update_release_draft_api:
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-config/release-drafter.yaml
+          disable-autolabeler: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

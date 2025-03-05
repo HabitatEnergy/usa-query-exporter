@@ -1,10 +1,8 @@
-name: USA Query Exporter - Publish Release
+name: API = Publish Release
 
 on:
   release:
     types: [published]
-    paths:
-      - "./**"
 
 permissions:
   contents: read
@@ -17,7 +15,8 @@ jobs:
         uses: HabitatEnergy/infra-shared-actions/publish-image@main
         with:
           aws-profile: usa
-          repository: 417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter
+          repository: "417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter"
           dockerfile: ./Dockerfile
           context: ./
           push: true
+          working-directory: ./
