@@ -111,9 +111,7 @@ class InvalidQuerySchedule(Exception):
     """Query schedule is wrong or both schedule and interval specified."""
 
     def __init__(self, query_name: str, message: str) -> None:
-        super().__init__(
-            f'Invalid schedule for query "{query_name}": {message}'
-        )
+        super().__init__(f'Invalid schedule for query "{query_name}": {message}')
 
 
 # Database errors that mean the query won't ever succeed.  Not all possible
@@ -242,9 +240,7 @@ class Query:
     parameter_sets: InitVar[list[dict[str, t.Any]] | None] = None
     executions: list["QueryExecution"] = field(init=False, compare=False)
 
-    def __post_init__(
-        self, parameter_sets: list[dict[str, t.Any]] | None
-    ) -> None:
+    def __post_init__(self, parameter_sets: list[dict[str, t.Any]] | None) -> None:
         self._check_schedule()
         if not parameter_sets:
             self.executions = [QueryExecution(self.name, self)]
@@ -348,9 +344,7 @@ class WorkerAction:
         """Wait for completion and return the action result."""
         return await self._future
 
-    def _call_threadsafe(
-        self, call: Callable[..., t.Any], *args: t.Any
-    ) -> None:
+    def _call_threadsafe(self, call: Callable[..., t.Any], *args: t.Any) -> None:
         self._loop.call_soon_threadsafe(partial(call, *args))
 
 
@@ -364,9 +358,7 @@ class SnowflakeDataBase:
     ) -> None:
         self.config = config
         self.logger = logger
-        self._engine: SnowflakeConnection = create_snowflake_connection(
-            self.config.dsn
-        )
+        self._engine: SnowflakeConnection = create_snowflake_connection(self.config.dsn)
 
     async def __aenter__(self) -> "SnowflakeDataBase":
         if not self._engine:
@@ -401,9 +393,7 @@ class SnowflakeDataBase:
             )
         except Exception as error:
             message = str(error).strip()
-            self.logger.error(
-                f'error from database "{self.config.name}": {message}'
-            )
+            self.logger.error(f'error from database "{self.config.name}": {message}')
             raise DataBaseQueryError(message)
         finally:
             assert self._pending_queries >= 0, "pending queries is negative"
@@ -511,9 +501,7 @@ class DataBaseConnection:
         logger = self.logger.bind(worker_id=current_thread().native_id)
         logger.debug("start")
         while True:
-            future = asyncio.run_coroutine_threadsafe(
-                self._queue.get(), self._loop
-            )
+            future = asyncio.run_coroutine_threadsafe(self._queue.get(), self._loop)
             action = future.result()
             logger.debug("action received", action=str(action))
             action()
@@ -646,16 +634,16 @@ class DataBase:
         self.logger.debug("disconnected")
 
     def _setup_query_latency_tracking(self, engine: Engine) -> None:
-        @event.listens_for(engine, "before_cursor_execute")  # type: ignore
-        def before_cursor_execute(
+        @event.listens_for(engine, "before_cursor_execute")
+        def before_cursor_execute( # type: ignore
             conn, cursor, statement, parameters, context, executemany
-        ) -> None:
+        ) -> None:  
             conn.info["query_start_time"] = perf_counter()
 
-        @event.listens_for(engine, "after_cursor_execute")  # type: ignore
-        def after_cursor_execute(
+        @event.listens_for(engine, "after_cursor_execute")
+        def after_cursor_execute(  # type: ignore
             conn, cursor, statement, parameters, context, executemany
-        ) -> None:
+        ) -> None: 
             conn.info["query_latency"] = perf_counter() - conn.info.pop(
                 "query_start_time"
             )

@@ -50,9 +50,9 @@ jobs:
           tag: main
           repository: "417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter"
           dockerfile: ./Dockerfile
-          context: ./
+          context: .
           push: true
-          working-directory: ./
+          working-directory: .
 
   update_release_draft_api:
     permissions:
