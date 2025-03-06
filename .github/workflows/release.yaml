@@ -1,0 +1,22 @@
+name: API = Publish Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64, python-3.11]
+    steps:
+      - name: Publish Image
+        uses: HabitatEnergy/infra-shared-actions/publish-image@main
+        with:
+          aws-profile: usa
+          repository: "417844920390.dkr.ecr.us-east-1.amazonaws.com/usa-query-exporter"
+          dockerfile: ./Dockerfile
+          context: ./
+          push: true
+          working-directory: ./
