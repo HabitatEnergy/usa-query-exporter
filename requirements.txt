@@ -129,7 +129,7 @@ rpds-py==0.22.3
     #   referencing
 six==1.17.0
     # via python-dateutil
-snowflake-connector-python==3.13.0
+snowflake-connector-python==3.13.1
     # via query-exporter (pyproject.toml)
 sortedcontainers==2.4.0
     # via snowflake-connector-python
